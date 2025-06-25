@@ -2,7 +2,7 @@ import mesa
 from mesa.visualization.modules import CanvasGrid, ChartModule
 from mesa.visualization.ModularVisualization import ModularServer
 from mesa.visualization.UserParam import UserSettableParameter
-from enums import AgentRole
+from enums import AgentRole, OrgStructure
 from construction_model import ConstructionModel
 
 try:
@@ -19,17 +19,32 @@ def agent_portrayal(agent):
         "r": 0.5
     }
     
+    # Adjust color shade based on organizational structure
+    org_modifier = (
+        "#0000FF" if agent.model.org_structure == OrgStructure.FUNCTIONAL else
+        "#4169E1" if agent.model.org_structure == OrgStructure.FLAT else
+        "#1E90FF"  # Hierarchical
+    ) if agent.role == AgentRole.WORKER else (
+        "#008000" if agent.model.org_structure == OrgStructure.FUNCTIONAL else
+        "#32CD32" if agent.model.org_structure == OrgStructure.FLAT else
+        "#228B22"  # Hierarchical
+    ) if agent.role == AgentRole.MANAGER else (
+        "#FF0000" if agent.model.org_structure == OrgStructure.FUNCTIONAL else
+        "#FF4500" if agent.model.org_structure == OrgStructure.FLAT else
+        "#DC143C"  # Hierarchical
+    ) if agent.role == AgentRole.DIRECTOR else "#FFA500"  # Reporters always orange
+
     if agent.role == AgentRole.WORKER:
-        portrayal["Color"] = "blue"
+        portrayal["Color"] = org_modifier
         portrayal["Layer"] = 0
     elif agent.role == AgentRole.MANAGER:
-        portrayal["Color"] = "green"
+        portrayal["Color"] = org_modifier
         portrayal["Layer"] = 1
     elif agent.role == AgentRole.DIRECTOR:
-        portrayal["Color"] = "red"
+        portrayal["Color"] = org_modifier
         portrayal["Layer"] = 2
     elif agent.role == AgentRole.REPORTER:
-        portrayal["Color"] = "orange"
+        portrayal["Color"] = org_modifier
         portrayal["Layer"] = 3
     
     sa_score = agent.awareness.total_score()
@@ -42,12 +57,17 @@ class ModelLegend:
         pass
     
     def render(self, model):
-        legend_text = """
+        legend_text = f"""
         Agent Legend:
-        🔵 Blue = Workers
-        🟢 Green = Managers  
-        🔴 Red = Directors
+        🔵 Blue (shades) = Workers
+        🟢 Green (shades) = Managers  
+        🔴 Red (shades) = Directors
         🟠 Orange = Reporters
+        
+        Organizational Structure: {model.org_structure.value.capitalize()}
+        - Functional: Standard role-based communication
+        - Flat: Open communication across roles
+        - Hierarchical: Strict chain of command
         
         Size = Situational Awareness Level
         """
@@ -74,6 +94,12 @@ def create_server():
             "Reporting Structure",
             value="dedicated",
             choices=["dedicated", "self", "none"]
+        ),
+        "org_structure": UserSettableParameter(
+            "choice",
+            "Organizational Structure",
+            value="functional",
+            choices=["functional", "flat", "hierarchical"]
         ),
         "hazard_prob": UserSettableParameter(
             "slider",
