@@ -5,6 +5,11 @@ class ReportingStructure(Enum):
     SELF = "self"
     NONE = "none"
 
+class OrgStructure(Enum):
+    FUNCTIONAL = "functional"
+    FLAT = "flat"
+    HIERARCHICAL = "hierarchical"
+
 class AgentRole(Enum):
     WORKER = "worker"
     MANAGER = "manager"
