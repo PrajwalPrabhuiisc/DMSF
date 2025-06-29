@@ -342,28 +342,6 @@ Reward structure:
 - Grid-based movement abstracting complex site mobility
 - Fixed simulation duration may not capture long-term adaptation effects
 
-### 10.2 Future Enhancements
-
-**Model Improvements**:
-- Dynamic decision model retraining based on simulation outcomes
-- Multi-dimensional resource modeling (materials, equipment, personnel)
-- Continuous event severity modeling with temporal correlation
-- Social network analysis for communication pattern optimization
-
-**Validation Approaches**:
-- Comparison with real construction site data
-- Expert validation of agent behavior patterns  
-- Sensitivity analysis for parameter robustness
-- Cross-validation with other construction simulation frameworks
-
-## 11. Conclusion
-
-This simulation framework provides a comprehensive platform for studying the impact of reporting structures on Situational Awareness in construction environments. By incorporating non-deterministic elements through stochastic event generation, probabilistic decision-making, and communication failures, the model captures essential aspects of real-world construction site dynamics.
-
-The mathematical formulations enable precise measurement of SA components and their relationship to project outcomes, while the modular implementation supports extensive experimental configuration. The framework's ability to abstract complex construction dynamics into manageable computational models makes it valuable for both research and practical applications in construction safety management.
-
-Through systematic evaluation of different reporting and organizational structure combinations, this research aims to provide evidence-based recommendations for optimizing construction site safety and efficiency. The insights generated could inform real-world construction management practices, safety protocol development, and organizational design decisions.
-
 ## References
 
 1. MESA Framework Documentation: https://mesa.readthedocs.io/
