@@ -4,6 +4,7 @@ import random
 import logging
 import os
 import time
+import traceback
 from datetime import datetime
 from mesa import Model
 from mesa.time import RandomActivation
@@ -33,8 +34,12 @@ class ConstructionModel(Model):
         self.grid = MultiGrid(width, height, True)
         self.schedule = RandomActivation(self)
         self.simulation_id = f"sim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_id:04d}"  # Unique ID with run_id
-        self.reporting_structure = getattr(ReportingStructure, reporting_structure.upper())
-        self.org_structure = getattr(OrgStructure, org_structure.upper())
+        try:
+            self.reporting_structure = getattr(ReportingStructure, reporting_structure.upper())
+            self.org_structure = getattr(OrgStructure, org_structure.upper())
+        except AttributeError as e:
+            logging.error(f"Invalid enum value: {e}")
+            raise ValueError(f"Invalid reporting_structure ({reporting_structure}) or org_structure ({org_structure})")
         self.hazard_prob = hazard_prob
         self.delay_prob = delay_prob
         self.resource_prob = resource_prob
@@ -55,8 +60,8 @@ class ConstructionModel(Model):
         self.organizational_memory = {et: {'best_action': None, 'success_count': 0} for et in EventType}
         self.configuration_log = [{
             'simulation_id': self.simulation_id,
-            'reporting_structure': self.reporting_structure,
-            'org_structure': self.org_structure,
+            'reporting_structure': self.reporting_structure.value,
+            'org_structure': self.org_structure.value,
             'hazard_prob': self.hazard_prob,
             'delay_prob': self.delay_prob,
             'resource_prob': self.resource_prob,
@@ -97,7 +102,7 @@ class ConstructionModel(Model):
                 "Reporter_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.REPORTER),
             },
             agent_reporters={
-                "Role": lambda a: a.role,
+                "Role": lambda a: a.role.value,
                 "SA_Total": lambda a: a.sa.total_score(),
                 "SA_Perception": lambda a: a.sa.perception,
                 "SA_Comprehension": lambda a: a.sa.comprehension,
@@ -192,16 +197,15 @@ class ConstructionModel(Model):
         
         effective_hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
         effective_delay_prob = self.delay_prob * (1 + 0.02 * budget_factor)
-        effective_resource_prob = self.resource_prob
+        effective_resource_prob = self.resource_prob + 0.03 * sum(severity for et, severity in events if et == EventType.HAZARD) + 0.02 * sum(severity for et, severity in events if et == EventType.DELAY)
 
         if random.random() < effective_hazard_prob:
             severity = random.uniform(0.5, 1.0)
             events.append((EventType.HAZARD, severity))
-            effective_resource_prob += 0.03 * severity
         if random.random() < effective_delay_prob:
             severity = random.uniform(0.3, 0.7)
             events.append((EventType.DELAY, severity))
-            effective_resource_prob += 0.02 * severity
+            self.outcomes.total_tasks += 1  # Increment tasks for delays
         if random.random() < effective_resource_prob:
             severity = random.uniform(0.2, 0.5)
             events.append((EventType.RESOURCE_SHORTAGE, severity))
@@ -232,7 +236,8 @@ class ConstructionModel(Model):
                 radius = 5
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
                 for neighbor in neighbors:
-                    neighbor.received_reports.append((event_type, severity))
+                    if neighbor.role != AgentRole.REPORTER:  # Prevent non-reporters sending to reporters
+                        neighbor.received_reports.append((event_type, severity))
 
     def log_metrics(self):
         self.datacollector.collect(self)
@@ -260,7 +265,10 @@ class ConstructionModel(Model):
                 logging.debug(f"Data saved to fallback CSV: {self.csv_filepath}")
 
     def step(self):
-        self.schedule.step()
+        events = self.get_events()
+        for agent in self.schedule.agents:
+            agent.observe_events(events)
+            agent.step()
         self.log_metrics()
 
     def run_simulation(self, steps=150):
