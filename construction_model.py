@@ -194,7 +194,7 @@ class ConstructionModel(Model):
         incident_factor = min(1.0, 1 + 0.05 * self.outcomes.safety_incidents)
         worker_fatigue = np.mean([agent.fatigue for agent in self.schedule.agents if agent.role == AgentRole.WORKER])
         
-        effective_h Hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
+        effective_hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
         effective_delay_prob = self.delay_prob * (1 + 0.02 * budget_factor)
         effective_resource_prob = self.resource_prob + 0.03 * sum(event["severity"] for event in events if event["type"] == EventType.HAZARD) + 0.02 * sum(event["severity"] for event in events if event["type"] == EventType.DELAY)
 
