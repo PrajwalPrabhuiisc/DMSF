@@ -46,8 +46,8 @@ def run_simulation(config, run_id, seed):
             run_id=run_id
         )
         model.run_simulation(steps=150)
-        model_data = model.datacollector.get_model_vars_dataframe()
-        agent_data = model.datacollector.get_agent_vars_dataframe()
+        model_data = model.datacollector.get_model_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
+        agent_data = model.datacollector.get_agent_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
         return {
             'run_id': run_id,
             'config': config,
@@ -70,6 +70,7 @@ def aggregate_results(results, output_file):
         model_df['reporting_structure'] = res['config']['reporting_structure']
         model_df['org_structure'] = res['config']['org_structure']
         model_df['hazard_prob'] = res['config']['hazard_prob']
+        model_df['delay_prob'] = res['config']['delay_prob']
         model_df['reporter_detection'] = res['config']['reporter_detection']
         model_dfs.append(model_df)
         
@@ -77,6 +78,9 @@ def aggregate_results(results, output_file):
         agent_df['run_id'] = res['run_id']
         agent_df['reporting_structure'] = res['config']['reporting_structure']
         agent_df['org_structure'] = res['config']['org_structure']
+        agent_df['hazard_prob'] = res['config']['hazard_prob']
+        agent_df['delay_prob'] = res['config']['delay_prob']
+        agent_df['reporter_detection'] = res['config']['reporter_detection']
         agent_dfs.append(agent_df)
     
     if not model_dfs or not agent_dfs:
@@ -84,8 +88,8 @@ def aggregate_results(results, output_file):
         print("Error: No valid simulation results to aggregate")
         return
     
-    model_summary = pd.concat(model_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'reporter_detection', 'Step']).agg(['mean', 'std']).reset_index()
-    agent_summary = pd.concat(agent_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'reporter_detection', 'Step', 'Role']).agg(['mean', 'std']).reset_index()
+    model_summary = pd.concat(model_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'delay_prob', 'reporter_detection', 'Step']).agg(['mean', 'std']).reset_index()
+    agent_summary = pd.concat(agent_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'delay_prob', 'reporter_detection', 'Step', 'Role']).agg(['mean', 'std']).reset_index()
     
     # Write aggregated results with lock
     with file_lock:
@@ -117,25 +121,32 @@ def main():
             'reporting_structure': rs.value,
             'org_structure': os.value,
             'hazard_prob': hp,
-            'delay_prob': 0.10,
+            'delay_prob': dp,
             'comm_failure_dedicated': 0.05,
             'comm_failure_self': 0.10,
             'comm_failure_none': 0.50,
             'reporter_detection': rd
         }
-        for rs, os, hp, rd in product(
-            ReportingStructure, OrgStructure, [0.05, 0.10, 0.15], [0.90, 0.95, 0.99]
+        for rs, os, hp, dp, rd in product(
+            ReportingStructure, OrgStructure, [0.05, 0.10, 0.15], [0.05, 0.10, 0.15], [0.90, 0.95, 0.99]
         )
     ]
     n_runs = 100
     output_dir = "monte_carlo_outputs"
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        logging.debug(f"Created output directory: {output_dir}")
+    except Exception as e:
+        logging.error(f"Failed to create output directory {output_dir}: {str(e)}")
+        print(f"Failed to create output directory {output_dir}: {e}")
+        return
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_file = os.path.join(output_dir, f"monte_carlo_{timestamp}.xlsx")
 
     # Run simulations in parallel
     pool = mp.Pool(mp.cpu_count())
-    results = [pool.apply_async(run_simulation, args=(config, i * len(configs) + j, i * len(configs) + j))
+    results = [pool.apply_async(run_simulation, args=(config, i * len(configs) + j, random.randint(0, 1000000)))
                for i in range(n_runs) for j, config in enumerate(configs)]
     results = [r.get() for r in results]
     pool.close()
