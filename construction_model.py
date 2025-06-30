@@ -97,7 +97,7 @@ class ConstructionModel(Model):
                 "Director_Act_Count": lambda m: sum(agent.action_counts.get('act', 0) for agent in m.schedule.agents if agent.role == AgentRole.DIRECTOR),
                 "Reporter_Act_Count": lambda m: sum(agent.action_counts.get('act', 0) for agent in m.schedule.agents if agent.role == AgentRole.REPORTER),
                 "Worker_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.WORKER),
-                "Manager_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.MANAGER),
+                "Manager_Report_Count": lambda m: sum( agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.MANAGER),
                 "Director_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.DIRECTOR),
                 "Reporter_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.REPORTER),
             },
@@ -125,31 +125,31 @@ class ConstructionModel(Model):
         num_reporters = 5 if self.reporting_structure == ReportingStructure.DEDICATED else 0
 
         for i in range(num_workers):
-            agent = ConstructionAgent(i, self, AgentRole.WORKER, self.worker_detection, self.worker_reporting)
-            self.schedule.add(agent)
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
+            agent = ConstructionAgent(i, self, AgentRole.WORKER, (x, y))
+            self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
         for i in range(num_workers, num_workers + num_managers):
-            agent = ConstructionAgent(i, self, AgentRole.MANAGER, self.manager_detection, self.manager_reporting)
-            self.schedule.add(agent)
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
+            agent = ConstructionAgent(i, self, AgentRole.MANAGER, (x, y))
+            self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
         for i in range(num_workers + num_managers, num_workers + num_managers + num_directors):
-            agent = ConstructionAgent(i, self, AgentRole.DIRECTOR, self.director_detection, self.director_reporting)
-            self.schedule.add(agent)
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
+            agent = ConstructionAgent(i, self, AgentRole.DIRECTOR, (x, y))
+            self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
         for i in range(num_workers + num_managers + num_directors, num_workers + num_managers + num_directors + num_reporters):
-            agent = ConstructionAgent(i, self, AgentRole.REPORTER, self.reporter_detection, self.reporter_reporting)
-            self.schedule.add(agent)
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
+            agent = ConstructionAgent(i, self, AgentRole.REPORTER, (x, y))
+            self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
     def setup_excel_logging(self):
