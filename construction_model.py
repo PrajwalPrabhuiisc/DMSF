@@ -6,6 +6,7 @@ import os
 import time
 import traceback
 from datetime import datetime
+from typing import Dict
 from mesa import Model
 from mesa.time import RandomActivation
 from mesa.space import MultiGrid
@@ -236,7 +237,7 @@ class ConstructionModel(Model):
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
                 for neighbor in neighbors:
                     if neighbor.role != AgentRole.REPORTER:
-                        neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+                        agent.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
             return True
         return False
 
@@ -250,7 +251,8 @@ class ConstructionModel(Model):
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='a' if os.path.exists(self.excel_filepath) else 'w') as writer:
+                mode = 'a' if os.path.exists(self.excel_filepath) else 'w'
+                with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode=mode, if_sheet_exists='replace') as writer:
                     self.datacollector.get_model_vars_dataframe().to_excel(writer, sheet_name='Model_Metrics', index=True)
                     self.datacollector.get_agent_vars_dataframe().to_excel(writer, sheet_name='Agent_SA', index=True)
                 logging.debug(f"Data saved to Excel: {self.excel_filepath}")
