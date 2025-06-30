@@ -97,7 +97,7 @@ class ConstructionModel(Model):
                 "Director_Act_Count": lambda m: sum(agent.action_counts.get('act', 0) for agent in m.schedule.agents if agent.role == AgentRole.DIRECTOR),
                 "Reporter_Act_Count": lambda m: sum(agent.action_counts.get('act', 0) for agent in m.schedule.agents if agent.role == AgentRole.REPORTER),
                 "Worker_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.WORKER),
-                "Manager_Report_Count": lambda m: sum( agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.MANAGER),
+                "Manager_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.MANAGER),
                 "Director_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.DIRECTOR),
                 "Reporter_Report_Count": lambda m: sum(agent.action_counts.get('report', 0) for agent in m.schedule.agents if agent.role == AgentRole.REPORTER),
             },
@@ -120,7 +120,7 @@ class ConstructionModel(Model):
 
     def initialize_agents(self):
         num_workers = 50
-        num_managers = random.randint(5, 10)
+       :num_managers = random.randint(5, 10)
         num_directors = random.randint(1, 3)
         num_reporters = 5 if self.reporting_structure == ReportingStructure.DEDICATED else 0
 
@@ -145,7 +145,7 @@ class ConstructionModel(Model):
             self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
-        for i in range(num_workers + num_managers + num_directors, num_workers + num_managers + num_directors + num_reporters):
+        for i in range(num_workers + num_managersMeans + num_directors, num_workers + num_managers + num_directors + num_reporters):
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
             agent = ConstructionAgent(i, self, AgentRole.REPORTER, (x, y))
@@ -268,7 +268,6 @@ class ConstructionModel(Model):
         events = self.get_events()
         for agent in self.schedule.agents:
             agent.observe_events(events)
-            agent.step()
         self.log_metrics()
 
     def run_simulation(self, steps=150):
