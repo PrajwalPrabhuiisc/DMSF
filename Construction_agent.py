@@ -13,16 +13,16 @@ class ConstructionAgent(mesa.Agent):
         super().__init__(unique_id, model)
         self.role = role
         self.pos = pos
-        self.sa = SituationalAwareness()  # Changed from 'awareness' to 'sa' for consistency
+        self.sa = SituationalAwareness()
         self.workload = random.randint(1, 3)
         self.fatigue = random.uniform(0, 0.5)
         self.experience = random.uniform(0, 0.5) if role == AgentRole.WORKER else random.uniform(0.5, 1.0)
         self.risk_tolerance = random.uniform(0.3, 0.7) if role == AgentRole.WORKER else random.uniform(0.1, 0.5)
-        self.stress = 0.5  # Initialize stress to match DataCollector
+        self.stress = 0.5
         self.reports_sent = 0
         self.received_reports = []
         self.decision_model = DecisionModel()
-        self.action_counts = {"ignore": 0, "report": 0, "act": 0, "escalate": 0}  # Changed from 'actions_taken'
+        self.action_counts = {"ignore": 0, "report": 0, "act": 0, "escalate": 0}
         self.q_table = {
             EventType.HAZARD: {"ignore": 0, "report": 0, "act": 0, "escalate": 0},
             EventType.DELAY: {"ignore": 0, "report": 0, "act": 0, "escalate": 0},
@@ -58,7 +58,6 @@ class ConstructionAgent(mesa.Agent):
                 0.8 if self.model.org_structure == OrgStructure.HIERARCHICAL else
                 1.0
             )
-            # Reduce SA if safety incidents exceed threshold
             sa_reduction = 0.7 if self.model.outcomes.safety_incidents > 5 else 1.0
             if self.role == AgentRole.REPORTER:
                 self.sa.perception = min(self.sa.perception + self.detection_accuracy * 50 * org_sa_modifier * sa_reduction, 100)
@@ -70,7 +69,7 @@ class ConstructionAgent(mesa.Agent):
                 self.sa.projection = min(self.sa.projection + self.detection_accuracy * 10 * (1 - self.fatigue) * org_sa_modifier * sa_reduction, 100)
             
             if self.received_reports and self.role != AgentRole.REPORTER:
-                additional_aspects = sum(1 for r in self.received_reports if r[0] == event["type"])  # Adjusted for tuple
+                additional_aspects = sum(1 for r in self.received_reports if r["type"] == event["type"])
                 self.sa.comprehension = min(self.sa.comprehension + additional_aspects * 10 * sa_reduction, 100)
             elif self.role == AgentRole.REPORTER:
                 self.sa.comprehension = min(self.sa.comprehension + len(self.received_reports) * 15 * sa_reduction, 100)
@@ -90,9 +89,9 @@ class ConstructionAgent(mesa.Agent):
             1.0
         )
         time_pressure = min(self.workload / 5, 1.0)
-        resource_availability = min(self.model.budget / 1000000, 1.0) * min(self.model.equipment / 500, 1.0)  # Adjusted 'equipment_available' to 'equipment'
-        self.stress = 1.0 if len([e for e in self.model.get_events() if e[0] == EventType.HAZARD]) > 1 else 0.5  # Adjusted for tuple
-        recent_hazard = 1.0 if any(r[0] == EventType.HAZARD for r in self.received_reports[-3:]) else 0.0  # Adjusted for tuple
+        resource_availability = min(self.model.budget / 1000000, 1.0) * min(self.model.equipment / 500, 1.0)
+        self.stress = 1.0 if len([e for e in self.model.get_events() if e["type"] == EventType.HAZARD]) > 1 else 0.5
+        recent_hazard = 1.0 if any(r["type"] == EventType.HAZARD for r in self.received_reports[-3:]) else 0.0
 
         inputs = [self.workload * org_modifier, self.fatigue, event_severity, self.experience, time_pressure, resource_availability, self.risk_tolerance, self.stress, recent_hazard]
         try:
@@ -107,7 +106,7 @@ class ConstructionAgent(mesa.Agent):
         
         q_values = self.q_table[event["type"]]
         org_memory = self.model.organizational_memory[event["type"]]
-        if org_memory['success_count'] > 0:  # Adjusted for dictionary structure
+        if org_memory['success_count'] > 0:
             best_action = org_memory['best_action']
             if best_action and random.random() < 0.7:
                 action_probs[["ignore", "report", "act", "escalate"].index(best_action)] *= 2.0
@@ -163,8 +162,7 @@ class ConstructionAgent(mesa.Agent):
 
         if action == "act":
             budget_sufficient = self.model.budget >= resource_cost
-            equipment_sufficient = self.model.equipment >= equipment_needed  # Adjusted 'equipment_available' to 'equipment'
-            # Dynamic success probability based on fatigue, workload, and experience
+            equipment_sufficient = self.model.equipment >= equipment_needed
             success_prob = min(0.9 + self.experience * 0.2 - self.fatigue * 0.1 - self.workload * 0.05, 0.95)
             if budget_sufficient and equipment_sufficient:
                 self.model.budget -= resource_cost
@@ -200,10 +198,10 @@ class ConstructionAgent(mesa.Agent):
                     print(f"Step {self.model.schedule.steps}: HAZARD incident due to insufficient resources (points={5 * event_severity:.1f})")
         elif action == "report" and random.random() > 0.1:
             self.reports_sent += 1
-            success = self.model.send_report(self, event["type"], event["severity"])
+            success = self.model.send_report(self, event)
         elif action == "escalate" and random.random() > 0.1:
             self.reports_sent += 1
-            success = self.model.send_report(self, event["type"], event["severity"])
+            success = self.model.send_report(self, event)
         elif action == "ignore" and event["type"] == EventType.HAZARD:
             ignore_risk = 0.05 * (1 - self.experience) * event_severity
             if random.random() < ignore_risk:
@@ -220,7 +218,7 @@ class ConstructionAgent(mesa.Agent):
             self.fatigue = min(self.fatigue + 0.1, 1.0)
             if success:
                 self.experience = min(self.experience + 0.05, 1.0)
-                self.model.organizational_memory[event["type"]]['success_count'] += 1  # Adjusted for dictionary structure
+                self.model.organizational_memory[event["type"]]['success_count'] += 1
                 self.model.organizational_memory[event["type"]]['best_action'] = action
         else:
             self.fatigue = max(0, self.fatigue - 0.05)
@@ -242,8 +240,7 @@ class ConstructionAgent(mesa.Agent):
                 action = self.decide_action(event)
                 self.execute_action(event, action)
                 if action in ["report", "escalate"] and self.model.reporting_structure in [self.model.ReportingStructure.SELF, self.model.ReportingStructure.NONE]:
-                    # Check if the event has been acted on
-                    if not any(r[0] == event["type"] and r.get("acted_on", False) for r in self.received_reports):
+                    if not any(r["type"] == event["type"] and r.get("acted_on", False) for r in self.received_reports):
                         follow_up_action = self.decide_action(event, is_follow_up=True)
                         self.execute_action(event, follow_up_action)
                         print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed fallback follow-up action {follow_up_action} for event {event['type'].value}")
