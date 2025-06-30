@@ -33,7 +33,7 @@ class ConstructionModel(Model):
         self.height = height
         self.grid = MultiGrid(width, height, True)
         self.schedule = RandomActivation(self)
-        self.simulation_id = f"sim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_id:04d}"  # Unique ID with run_id
+        self.simulation_id = f"sim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_id:04d}"
         try:
             self.reporting_structure = getattr(ReportingStructure, reporting_structure.upper())
             self.org_structure = getattr(OrgStructure, org_structure.upper())
@@ -120,7 +120,7 @@ class ConstructionModel(Model):
 
     def initialize_agents(self):
         num_workers = 50
-       :num_managers = random.randint(5, 10)
+        num_managers = random.randint(5, 10)
         num_directors = random.randint(1, 3)
         num_reporters = 5 if self.reporting_structure == ReportingStructure.DEDICATED else 0
 
@@ -145,7 +145,7 @@ class ConstructionModel(Model):
             self.schedule.add(agent)
             self.grid.place_agent(agent, (x, y))
 
-        for i in range(num_workers + num_managersMeans + num_directors, num_workers + num_managers + num_directors + num_reporters):
+        for i in range(num_workers + num_managers + num_directors, num_workers + num_managers + num_directors + num_reporters):
             x = self.random.randrange(self.grid.width)
             y = self.random.randrange(self.grid.height)
             agent = ConstructionAgent(i, self, AgentRole.REPORTER, (x, y))
@@ -166,7 +166,6 @@ class ConstructionModel(Model):
         self.excel_filepath = os.path.join(output_dir, filename)
         self.csv_filepath = os.path.join(output_dir, filename.replace('.xlsx', '.csv'))
 
-        # Retry mechanism for file creation
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
@@ -180,7 +179,7 @@ class ConstructionModel(Model):
                     break
             except (PermissionError, OSError) as e:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    time.sleep(0.1 * (attempt + 1))
                     continue
                 print(f"Error initializing Excel file {self.excel_filepath} after {max_attempts} attempts: {e}")
                 logging.error(f"Excel initialization error: {traceback.format_exc()}")
@@ -195,24 +194,24 @@ class ConstructionModel(Model):
         incident_factor = min(1.0, 1 + 0.05 * self.outcomes.safety_incidents)
         worker_fatigue = np.mean([agent.fatigue for agent in self.schedule.agents if agent.role == AgentRole.WORKER])
         
-        effective_hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
+        effective_h Hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
         effective_delay_prob = self.delay_prob * (1 + 0.02 * budget_factor)
-        effective_resource_prob = self.resource_prob + 0.03 * sum(severity for et, severity in events if et == EventType.HAZARD) + 0.02 * sum(severity for et, severity in events if et == EventType.DELAY)
+        effective_resource_prob = self.resource_prob + 0.03 * sum(event["severity"] for event in events if event["type"] == EventType.HAZARD) + 0.02 * sum(event["severity"] for event in events if event["type"] == EventType.DELAY)
 
         if random.random() < effective_hazard_prob:
             severity = random.uniform(0.5, 1.0)
-            events.append((EventType.HAZARD, severity))
+            events.append({"type": EventType.HAZARD, "severity": severity})
         if random.random() < effective_delay_prob:
             severity = random.uniform(0.3, 0.7)
-            events.append((EventType.DELAY, severity))
-            self.outcomes.total_tasks += 1  # Increment tasks for delays
+            events.append({"type": EventType.DELAY, "severity": severity})
+            self.outcomes.total_tasks += 1
         if random.random() < effective_resource_prob:
             severity = random.uniform(0.2, 0.5)
-            events.append((EventType.RESOURCE_SHORTAGE, severity))
+            events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
         
         return events
 
-    def send_report(self, sender, event_type, severity):
+    def send_report(self, sender, event: Dict):
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
@@ -223,27 +222,29 @@ class ConstructionModel(Model):
             if self.reporting_structure == ReportingStructure.DEDICATED and sender.role == AgentRole.REPORTER:
                 for agent in self.schedule.agents:
                     if agent.role != AgentRole.REPORTER:
-                        agent.received_reports.append((event_type, severity))
+                        agent.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
             elif self.reporting_structure == ReportingStructure.SELF:
                 radius = 3 if self.org_structure == OrgStructure.FLAT else 2
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
                 target_role = AgentRole.MANAGER if sender.role == AgentRole.WORKER else AgentRole.DIRECTOR
                 for neighbor in neighbors:
                     if neighbor.role == target_role:
-                        neighbor.received_reports.append((event_type, severity))
+                        neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
                         break
             else:  # ReportingStructure.NONE
                 radius = 5
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
                 for neighbor in neighbors:
-                    if neighbor.role != AgentRole.REPORTER:  # Prevent non-reporters sending to reporters
-                        neighbor.received_reports.append((event_type, severity))
+                    if neighbor.role != AgentRole.REPORTER:
+                        neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+            return True
+        return False
 
     def log_metrics(self):
         self.datacollector.collect(self)
 
     def log_agent_situational_awareness(self):
-        pass  # Implemented in datacollector
+        pass
 
     def save_to_excel(self):
         max_attempts = 3
