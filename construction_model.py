@@ -190,19 +190,16 @@ class ConstructionModel(Model):
 
     def get_events(self):
         events = []
-        # Simplified event probability calculations to ensure events occur
         org_factor = 1.0 if self.org_structure == OrgStructure.FLAT else 1.2 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
         incident_factor = min(1.5, 1 + 0.1 * self.outcomes.safety_incidents)
         
-        # Increase base probabilities to ensure events
         effective_hazard_prob = min(self.hazard_prob * org_factor * incident_factor, 0.75)
-        effective_delay_prob = min(self.delay_prob * org_factor, 0.50)
+        effective_delay_prob = min(self.delay_prob * org_factor, 0.60)  # Increased for DELAY
         effective_resource_prob = min(self.resource_prob + 0.05 * self.outcomes.safety_incidents, 0.50)
 
-        # Generate at least one event per step to ensure activity
         event_types = [EventType.HAZARD, EventType.DELAY, EventType.RESOURCE_SHORTAGE]
         weights = [effective_hazard_prob, effective_delay_prob, effective_resource_prob]
-        num_events = max(1, np.random.choice([1, 2], p=[0.7, 0.3]))  # 70% chance of 1 event, 30% chance of 2
+        num_events = max(1, np.random.choice([1, 2], p=[0.6, 0.4]))  # Increased chance of 2 events
         chosen_types = np.random.choice(event_types, size=num_events, p=np.array(weights)/sum(weights), replace=False)
 
         for event_type in chosen_types:
@@ -217,21 +214,22 @@ class ConstructionModel(Model):
                 severity = random.uniform(0.2, 0.5)
                 events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
         
-        # Ensure unaddressed hazards contribute to safety incidents
         for event in events:
-            if event["type"] == EventType.HAZARD and random.random() < 0.1:  # 10% chance unaddressed hazard causes incident
+            if event["type"] == EventType.HAZARD and random.random() < 0.15:  # Increased to 15%
                 self.outcomes.safety_incidents += 1
                 self.outcomes.incident_points += 5 * event["severity"]
                 self.outcomes.cost_overruns += 25000 * event["severity"]
-                print(f"Step {self.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
+                logging.debug(f"Step {self.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
+                print(f"Step {self.model.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
         
+        logging.debug(f"Step {self.schedule.steps}: Generated events: {[e['type'].value for e in events]}")
         return events
 
     def send_report(self, sender, event: Dict):
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
-        comm_failure *= 1.2 if self.outcomes.safety_incidents > 3 else 1.0
+        comm_failure *= 1.1 if self.outcomes.safety_incidents > 3 else 1.0  # Reduced modifier
         comm_failure *= 0.9 if self.org_structure == OrgStructure.FLAT else 1.1 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
 
         if random.random() > comm_failure:
@@ -253,11 +251,19 @@ class ConstructionModel(Model):
                 for neighbor in neighbors:
                     if neighbor.role in [AgentRole.MANAGER, AgentRole.DIRECTOR]:
                         neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+                        # Force follow-up action for DELAY in none reporting
+                        if event["type"] == EventType.DELAY:
+                            neighbor.step()  # Trigger immediate processing
+            logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) sent successfully for {event['type'].value}")
             return True
+        logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) failed for {event['type'].value}")
         return False
 
     def log_metrics(self):
         self.datacollector.collect(self)
+        logging.debug(f"Step {self.schedule.steps}: Metrics collected - Safety_Incidents={self.outcomes.safety_incidents}, "
+                     f"Tasks_Completed={self.outcomes.tasks_completed_on_time}, Total_Tasks={self.outcomes.total_tasks}, "
+                     f"Schedule_Adherence={(self.outcomes.tasks_completed_on_time / self.outcomes.total_tasks * 100) if self.outcomes.total_tasks > 0 else 0:.2f}%")
 
     def log_agent_situational_awareness(self):
         pass
