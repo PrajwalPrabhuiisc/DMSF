@@ -16,11 +16,11 @@ logging.basicConfig(filename='analysis_errors.log', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 def load_simulation_data(sim_files):
-    """Aggregate data from individual simulation files."""
+    """Aggregate data from individual simulation files, handling column variations."""
     model_dfs = []
     for file in sim_files:
         try:
-            # Load Configuration sheet to get parameters
+            # Load Configuration sheet
             config_df = pd.read_excel(file, sheet_name='Configuration')
             if config_df.empty:
                 logging.warning(f"No configuration data in {file}")
@@ -28,8 +28,20 @@ def load_simulation_data(sim_files):
             config = config_df.iloc[0]
             sim_id = config['simulation_id']
             
-            # Load Model_Metrics for Step 150
+            # Load Model_Metrics and handle Step column variations
             model_df = pd.read_excel(file, sheet_name='Model_Metrics')
+            # Check for 'Step' or 'step' column
+            step_col = None
+            for col in ['Step', 'step', 'Index', 'index']:
+                if col in model_df.columns:
+                    step_col = col
+                    break
+            if step_col is None:
+                logging.warning(f"No Step column found in {file}")
+                continue
+            
+            # Rename to 'Step' for consistency
+            model_df = model_df.rename(columns={step_col: 'Step'})
             model_df = model_df[model_df['Step'] == 150].copy()
             if model_df.empty:
                 logging.warning(f"No Step 150 data in {file}")
@@ -80,9 +92,10 @@ def analyze_results(sim_files, output_dir):
     # Ensure required columns
     required_columns = ['Average_SA', 'Safety_Incidents', 'Schedule_Adherence', 
                         'reporting_structure', 'org_structure', 'hazard_prob', 'delay_prob']
-    if not all(col in df.columns for col in required_columns):
-        logging.error("Missing required columns in aggregated data")
-        print("Error: Missing required columns")
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        logging.error(f"Missing columns in aggregated data: {missing_cols}")
+        print(f"Error: Missing columns: {missing_cols}")
         return
 
     # Metrics to analyze
