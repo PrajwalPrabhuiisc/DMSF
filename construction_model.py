@@ -20,6 +20,9 @@ logging.basicConfig(filename='simulation_errors.log', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ConstructionModel(Model):
+    # Add the ReportingStructure as a class attribute to make it accessible
+    ReportingStructure = ReportingStructure
+    
     def __init__(self, width: int = 20, height: int = 20, reporting_structure: str = "dedicated",
                  org_structure: str = "functional", hazard_prob: float = 0.05, delay_prob: float = 0.10,
                  resource_prob: float = 0.05, comm_failure_dedicated: float = 0.05, 
