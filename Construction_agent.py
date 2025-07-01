@@ -53,7 +53,7 @@ class ConstructionAgent(mesa.Agent):
             if not event:
                 continue
             detection_modifier = 1.5 if self.role == AgentRole.REPORTER else 1.0
-            if random.random() < 0.01 * (1 - self.experience * detection_modifier):  # Reduced from 0.02
+            if random.random() < 0.005 * (1 - self.experience * detection_modifier):  # Further reduced
                 logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to observe event {event['type'].value}")
                 print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to observe event {event['type'].value}")
                 continue
@@ -123,11 +123,11 @@ class ConstructionAgent(mesa.Agent):
         for i, action in enumerate(["ignore", "report", "act", "escalate"]):
             action_probs[i] += q_values[action] * 0.2
         if event["type"] == EventType.DELAY:
-            action_probs[2] *= 15.0  # Further increased to favor 'act' for DELAY
+            action_probs[2] *= 20.0  # Further increased to favor 'act'
         elif event["type"] == EventType.HAZARD:
             action_probs[1] *= 5.0
             action_probs[3] *= 5.0
-            action_probs[2] *= 2.0  # Increased to allow more 'act' for HAZARD
+            action_probs[2] *= 2.0
         action_probs /= action_probs.sum()
 
         if self.risk_tolerance > 0.6 and random.random() < 0.3:
@@ -140,7 +140,7 @@ class ConstructionAgent(mesa.Agent):
         action = actions[np.argmax(action_probs)]
 
         if self.model.reporting_structure == self.model.ReportingStructure.SELF:
-            if action == "report" and random.random() > self.reporting_probability * 0.8:  # Increased threshold
+            if action == "report" and random.random() > self.reporting_probability * 0.9:  # Increased threshold
                 self.action_counts["report"] -= 1
                 self.action_counts["act"] += 1
                 action = "act"
@@ -158,8 +158,8 @@ class ConstructionAgent(mesa.Agent):
         self.action_counts[action] += 1
         success = False
         event_severity = event.get("severity", 1.0)
-        resource_cost = 300 * event_severity if event["type"] == EventType.DELAY else 500 * event_severity  # Lowered for DELAY
-        equipment_needed = 0.2 * event_severity if event["type"] == EventType.DELAY else 0.5 * event_severity if event["type"] == EventType.HAZARD else 0.5 * event_severity
+        resource_cost = 200 * event_severity if event["type"] == EventType.DELAY else 500 * event_severity  # Further lowered for DELAY
+        equipment_needed = 0.1 * event_severity if event["type"] == EventType.DELAY else 0.5 * event_severity if event["type"] == EventType.HAZARD else 0.5 * event_severity
 
         logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executing action {action} for {event['type'].value} (severity={event_severity:.2f}), "
                      f"Budget={self.model.budget:.2f}, Equipment={self.model.equipment}")
@@ -169,7 +169,7 @@ class ConstructionAgent(mesa.Agent):
         if action == "act":
             budget_sufficient = self.model.budget >= resource_cost
             equipment_sufficient = self.model.equipment >= equipment_needed
-            success_prob = min(0.85 + self.experience * 0.1 - self.fatigue * 0.15 - self.workload * 0.05, 0.9)  # Adjusted for DELAY
+            success_prob = min(0.9 + self.experience * 0.05 - self.fatigue * 0.1 - self.workload * 0.05, 0.95)  # Increased for DELAY
             if budget_sufficient and equipment_sufficient:
                 self.model.budget -= resource_cost
                 self.model.equipment -= equipment_needed
@@ -178,7 +178,7 @@ class ConstructionAgent(mesa.Agent):
                     logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) successfully mitigated HAZARD (prob={success_prob:.2f})")
                     print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) successfully mitigated HAZARD (prob={success_prob:.2f})")
                 elif event["type"] == EventType.DELAY and success:
-                    completion_prob = max(0.9, 0.95 - (self.fatigue * 0.05 + self.workload * 0.05 + (1 - self.experience) * 0.05))  # Increased for DELAY
+                    completion_prob = max(0.95, 0.98 - (self.fatigue * 0.03 + self.workload * 0.03 + (1 - self.experience) * 0.03))  # Increased
                     if random.random() < completion_prob:
                         self.model.outcomes.tasks_completed_on_time += 1
                         logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) completed DELAY task on time (prob={completion_prob:.2f})")
@@ -208,18 +208,18 @@ class ConstructionAgent(mesa.Agent):
                     self.model.outcomes.cost_overruns += 25000 * event_severity
                     logging.debug(f"Step {self.model.schedule.steps}: HAZARD incident due to insufficient resources (points={5 * event_severity:.1f})")
                     print(f"Step {self.model.schedule.steps}: HAZARD incident due to insufficient resources (points={5 * event_severity:.1f})")
-        elif action == "report" and random.random() > 0.05:  # Reduced failure chance
+        elif action == "report" and random.random() > 0.03:  # Further reduced failure chance
             self.reports_sent += 1
             success = self.model.send_report(self, event)
             logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) report sent: {success}")
             print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) report sent: {success}")
-        elif action == "escalate" and random.random() > 0.05:
+        elif action == "escalate" and random.random() > 0.03:
             self.reports_sent += 1
             success = self.model.send_report(self, event)
             logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) escalate sent: {success}")
             print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) escalate sent: {success}")
         elif action == "ignore" and event["type"] == EventType.HAZARD:
-            ignore_risk = 0.15 * (1 - self.experience) * event_severity  # Increased from 0.1
+            ignore_risk = 0.15 * (1 - self.experience) * event_severity
             if random.random() < ignore_risk:
                 self.model.outcomes.safety_incidents += 1
                 self.model.outcomes.incident_points += 5 * event_severity
@@ -257,11 +257,13 @@ class ConstructionAgent(mesa.Agent):
                 action = self.decide_action(event)
                 self.execute_action(event, action)
                 if action in ["report", "escalate"] and self.model.reporting_structure in [self.model.ReportingStructure.SELF, self.model.ReportingStructure.NONE]:
-                    if not any(r["type"] == event["type"] and r.get("acted_on", False) for r in self.received_reports):
-                        follow_up_action = self.decide_action(event, is_follow_up=True)
-                        self.execute_action(event, follow_up_action)
-                        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed fallback follow-up action {follow_up_action} for event {event['type'].value}")
-                        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed fallback follow-up action {follow_up_action} for event {event['type'].value}")
+                    for report in self.received_reports:
+                        if report["type"] == event["type"] and not report.get("acted_on", False):
+                            follow_up_action = self.decide_action(event, is_follow_up=True)
+                            self.execute_action(event, follow_up_action)
+                            report["acted_on"] = True
+                            logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed follow-up action {follow_up_action} for event {event['type'].value}")
+                            print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed follow-up action {follow_up_action} for event {event['type'].value}")
             possible_moves = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
             self.model.grid.move_agent(self, random.choice(possible_moves))
         except Exception as e:
