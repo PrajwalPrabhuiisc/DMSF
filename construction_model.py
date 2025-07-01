@@ -170,14 +170,10 @@ class ConstructionModel(Model):
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                if not os.path.exists(self.excel_filepath):
-                    with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='w') as writer:
-                        pd.DataFrame(self.configuration_log).to_excel(writer, sheet_name='Configuration', index=False)
-                    logging.debug(f"Initialized new Excel file: {self.excel_filepath}")
-                    break
-                else:
-                    logging.warning(f"Excel file {self.excel_filepath} already exists, skipping initialization")
-                    break
+                with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='w') as writer:
+                    pd.DataFrame(self.configuration_log).to_excel(writer, sheet_name='Configuration', index=False)
+                logging.debug(f"Initialized new Excel file: {self.excel_filepath}")
+                break
             except (PermissionError, OSError) as e:
                 if attempt < max_attempts - 1:
                     time.sleep(0.1 * (attempt + 1))
@@ -194,12 +190,12 @@ class ConstructionModel(Model):
         incident_factor = min(1.5, 1 + 0.1 * self.outcomes.safety_incidents)
         
         effective_hazard_prob = min(self.hazard_prob * org_factor * incident_factor, 0.75)
-        effective_delay_prob = min(self.delay_prob * org_factor, 0.60)  # Increased for DELAY
+        effective_delay_prob = min(self.delay_prob * org_factor, 0.70)  # Increased for DELAY
         effective_resource_prob = min(self.resource_prob + 0.05 * self.outcomes.safety_incidents, 0.50)
 
         event_types = [EventType.HAZARD, EventType.DELAY, EventType.RESOURCE_SHORTAGE]
         weights = [effective_hazard_prob, effective_delay_prob, effective_resource_prob]
-        num_events = max(1, np.random.choice([1, 2], p=[0.6, 0.4]))  # Increased chance of 2 events
+        num_events = max(1, np.random.choice([1, 2, 3], p=[0.5, 0.3, 0.2]))  # Increased chance of multiple events
         chosen_types = np.random.choice(event_types, size=num_events, p=np.array(weights)/sum(weights), replace=False)
 
         for event_type in chosen_types:
@@ -215,12 +211,12 @@ class ConstructionModel(Model):
                 events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
         
         for event in events:
-            if event["type"] == EventType.HAZARD and random.random() < 0.15:  # Increased to 15%
+            if event["type"] == EventType.HAZARD and random.random() < 0.15:
                 self.outcomes.safety_incidents += 1
                 self.outcomes.incident_points += 5 * event["severity"]
                 self.outcomes.cost_overruns += 25000 * event["severity"]
                 logging.debug(f"Step {self.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
-                print(f"Step {self.model.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
+                print(f"Step {self.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
         
         logging.debug(f"Step {self.schedule.steps}: Generated events: {[e['type'].value for e in events]}")
         return events
@@ -229,8 +225,8 @@ class ConstructionModel(Model):
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
-        comm_failure *= 1.1 if self.outcomes.safety_incidents > 3 else 1.0  # Reduced modifier
-        comm_failure *= 0.9 if self.org_structure == OrgStructure.FLAT else 1.1 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
+        comm_failure *= 1.0 if self.outcomes.safety_incidents > 3 else 0.9  # Reduced modifier
+        comm_failure *= 0.8 if self.org_structure == OrgStructure.FLAT else 1.1 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
 
         if random.random() > comm_failure:
             if self.reporting_structure == ReportingStructure.DEDICATED and sender.role == AgentRole.REPORTER:
@@ -244,6 +240,10 @@ class ConstructionModel(Model):
                 for neighbor in neighbors:
                     if neighbor.role == target_role:
                         neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+                        if event["type"] == EventType.DELAY:
+                            action = neighbor.decide_action(event, is_follow_up=True)
+                            neighbor.execute_action(event, action)
+                            neighbor.received_reports[-1]["acted_on"] = True
                         break
             else:  # ReportingStructure.NONE
                 radius = 5
@@ -251,19 +251,24 @@ class ConstructionModel(Model):
                 for neighbor in neighbors:
                     if neighbor.role in [AgentRole.MANAGER, AgentRole.DIRECTOR]:
                         neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
-                        # Force follow-up action for DELAY in none reporting
                         if event["type"] == EventType.DELAY:
-                            neighbor.step()  # Trigger immediate processing
+                            action = neighbor.decide_action(event, is_follow_up=True)
+                            neighbor.execute_action(event, action)
+                            neighbor.received_reports[-1]["acted_on"] = True
             logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) sent successfully for {event['type'].value}")
             return True
         logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) failed for {event['type'].value}")
         return False
 
     def log_metrics(self):
-        self.datacollector.collect(self)
-        logging.debug(f"Step {self.schedule.steps}: Metrics collected - Safety_Incidents={self.outcomes.safety_incidents}, "
-                     f"Tasks_Completed={self.outcomes.tasks_completed_on_time}, Total_Tasks={self.outcomes.total_tasks}, "
-                     f"Schedule_Adherence={(self.outcomes.tasks_completed_on_time / self.outcomes.total_tasks * 100) if self.outcomes.total_tasks > 0 else 0:.2f}%")
+        try:
+            self.datacollector.collect(self)
+            logging.debug(f"Step {self.schedule.steps}: Metrics collected - Safety_Incidents={self.outcomes.safety_incidents}, "
+                         f"Tasks_Completed={self.outcomes.tasks_completed_on_time}, Total_Tasks={self.outcomes.total_tasks}, "
+                         f"Schedule_Adherence={(self.outcomes.tasks_completed_on_time / self.outcomes.total_tasks * 100) if self.outcomes.total_tasks > 0 else 0:.2f}%")
+        except Exception as e:
+            logging.error(f"Error in log_metrics at step {self.schedule.steps}: {traceback.format_exc()}")
+            print(f"Error in log_metrics at step {self.schedule.steps}: {e}")
 
     def log_agent_situational_awareness(self):
         pass
@@ -274,32 +279,46 @@ class ConstructionModel(Model):
             try:
                 mode = 'a' if os.path.exists(self.excel_filepath) else 'w'
                 with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode=mode, if_sheet_exists='replace') as writer:
-                    self.datacollector.get_model_vars_dataframe().to_excel(writer, sheet_name='Model_Metrics', index=True)
-                    self.datacollector.get_agent_vars_dataframe().to_excel(writer, sheet_name='Agent_SA', index=True)
-                logging.debug(f"Data saved to Excel: {self.excel_filepath}")
+                    model_data = self.datacollector.get_model_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
+                    agent_data = self.datacollector.get_agent_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
+                    model_data.to_excel(writer, sheet_name='Model_Metrics', index=False)
+                    agent_data.to_excel(writer, sheet_name='Agent_SA', index=False)
+                logging.debug(f"Step {self.schedule.steps}: Data saved to Excel: {self.excel_filepath}, Rows={len(model_data)}")
                 break
             except (PermissionError, OSError) as e:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.1 * (attempt + 1))
+                    time.sleep(0.2 * (attempt + 1))
                     continue
-                print(f"Error saving to Excel {self.excel_filepath}: {e}")
+                print(f"Error saving to Excel {self.excel_filepath} after {max_attempts} attempts: {e}")
                 logging.error(f"Excel save error: {traceback.format_exc()}")
-                self.datacollector.get_model_vars_dataframe().to_csv(self.csv_filepath.replace('.csv', '_model_metrics.csv'), index=True)
-                self.datacollector.get_agent_vars_dataframe().to_csv(self.csv_filepath.replace('.csv', '_agent_sa.csv'), index=True)
+                model_data = self.datacollector.get_model_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
+                agent_data = self.datacollector.get_agent_vars_dataframe().reset_index().rename(columns={'index': 'Step'})
+                model_data.to_csv(self.csv_filepath.replace('.csv', '_model_metrics.csv'), index=False)
+                agent_data.to_csv(self.csv_filepath.replace('.csv', '_agent_sa.csv'), index=False)
                 logging.debug(f"Data saved to fallback CSV: {self.csv_filepath}")
 
     def step(self):
-        events = self.get_events()
-        for agent in self.schedule.agents:
-            agent.observe_events(events)
-        self.log_metrics()
+        try:
+            events = self.get_events()
+            for agent in self.schedule.agents:
+                agent.step()  # Call agent.step() instead of observe_events
+            self.log_metrics()
+        except Exception as e:
+            logging.error(f"Error in model step {self.schedule.steps}: {traceback.format_exc()}")
+            print(f"Error in model step {self.schedule.steps}: {e}")
 
     def run_simulation(self, steps=150):
-        for i in range(steps):
-            self.step()
-            if i % 10 == 0:
-                self.budget += 10000
-                self.equipment += 10
-            if i % 50 == 0:
-                self.save_to_excel()
-        self.save_to_excel()
+        try:
+            for i in range(steps):
+                logging.debug(f"Starting step {i}")
+                self.step()
+                if i % 10 == 0:
+                    self.budget += 10000
+                    self.equipment += 10
+                self.save_to_excel()  # Save every step to ensure data capture
+            logging.debug(f"Simulation {self.simulation_id} completed {steps} steps")
+        except Exception as e:
+            logging.error(f"Error in run_simulation: {traceback.format_exc()}")
+            print(f"Error in run_simulation: {e}")
+        finally:
+            self.save_to_excel()
