@@ -4,7 +4,7 @@ import mesa
 import random
 import traceback
 from typing import Dict, Optional, List
-from enums import AgentRole, EventType, OrgStructure
+from enums import AgentRole, EventType, OrgStructure, ReportingStructure
 from data_classes import SituationalAwareness
 from decision_model import DecisionModel
 
@@ -114,158 +114,29 @@ class ConstructionAgent(mesa.Agent):
             print(f"Warning: action_probs has length {len(action_probs)} instead of 4 for Agent {self.unique_id}")
             action_probs = np.array([0.25, 0.25, 0.25, 0.25])
         
-        q_values = self.q_table[event["type"]]
-        org_memory = self.model.organizational_memory[event["type"]]
-        if org_memory['success_count'] > 0:
-            best_action = org_memory['best_action']
-            if best_action and random.random() < 0.7:
-                action_probs[["ignore", "report", "act", "escalate"].index(best_action)] *= 2.0
-        for i, action in enumerate(["ignore", "report", "act", "escalate"]):
-            action_probs[i] += q_values[action] * 0.2
-        if event["type"] == EventType.DELAY:
-            action_probs[2] *= 20.0  # Further increased to favor 'act'
-        elif event["type"] == EventType.HAZARD:
-            action_probs[1] *= 5.0
-            action_probs[3] *= 5.0
-            action_probs[2] *= 2.0
-        action_probs /= action_probs.sum()
-
-        if self.risk_tolerance > 0.6 and random.random() < 0.3:
-            action_probs[2] *= 2.0
-            action_probs /= action_probs.sum()
-
-        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) action probs for {event['type'].value} {'(follow-up)' if is_follow_up else ''}: {action_probs}")
-        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) action probs for {event['type'].value} {'(follow-up)' if is_follow_up else ''}: {action_probs}")
         actions = ["ignore", "report", "act", "escalate"]
-        action = actions[np.argmax(action_probs)]
-
-        if self.model.reporting_structure == self.model.ReportingStructure.SELF:
-            if action == "report" and random.random() > self.reporting_probability * 0.9:  # Increased threshold
-                self.action_counts["report"] -= 1
-                self.action_counts["act"] += 1
-                action = "act"
-            elif self.model.org_structure == OrgStructure.HIERARCHICAL and action == "escalate" and self.role == AgentRole.WORKER:
-                action = "act"
-                self.action_counts["escalate"] -= 1
-                self.action_counts["act"] += 1
-
-        self.last_event_action = (event["type"], action)
-        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action: {action} for event {event['type'].value} {'(follow-up)' if is_follow_up else ''}")
-        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action: {action} for event {event['type'].value} {'(follow-up)' if is_follow_up else ''}")
-        return action
-
-    def execute_action(self, event: Dict, action: str):
+        action = np.random.choice(actions, p=action_probs)
+        
+        # Adjust action based on role and reporting structure
+        if self.role == AgentRole.WORKER and action == "escalate" and self.model.reporting_structure == ReportingStructure.CENTRALIZED:
+            action = "report"  # Workers report instead of escalate in centralized structures
+        elif self.role == AgentRole.REPORTER and action == "act":
+            action = "report"  # Reporters prefer reporting over acting
+        elif self.role == AgentRole.DIRECTOR and action == "ignore":
+            action = "escalate"  # Directors are less likely to ignore events
+        
+        # Update action counts and Q-table
         self.action_counts[action] += 1
-        success = False
-        event_severity = event.get("severity", 1.0)
-        resource_cost = 200 * event_severity if event["type"] == EventType.DELAY else 500 * event_severity  # Further lowered for DELAY
-        equipment_needed = 0.1 * event_severity if event["type"] == EventType.DELAY else 0.5 * event_severity if event["type"] == EventType.HAZARD else 0.5 * event_severity
-
-        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executing action {action} for {event['type'].value} (severity={event_severity:.2f}), "
-                     f"Budget={self.model.budget:.2f}, Equipment={self.model.equipment}")
-        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executing action {action} for {event['type'].value} (severity={event_severity:.2f}), "
-              f"Budget={self.model.budget:.2f}, Equipment={self.model.equipment}")
-
-        if action == "act":
-            budget_sufficient = self.model.budget >= resource_cost
-            equipment_sufficient = self.model.equipment >= equipment_needed
-            success_prob = min(0.9 + self.experience * 0.05 - self.fatigue * 0.1 - self.workload * 0.05, 0.95)  # Increased for DELAY
-            if budget_sufficient and equipment_sufficient:
-                self.model.budget -= resource_cost
-                self.model.equipment -= equipment_needed
-                success = random.random() < success_prob
-                if event["type"] == EventType.HAZARD and success:
-                    logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) successfully mitigated HAZARD (prob={success_prob:.2f})")
-                    print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) successfully mitigated HAZARD (prob={success_prob:.2f})")
-                elif event["type"] == EventType.DELAY and success:
-                    completion_prob = max(0.95, 0.98 - (self.fatigue * 0.03 + self.workload * 0.03 + (1 - self.experience) * 0.03))  # Increased
-                    if random.random() < completion_prob:
-                        self.model.outcomes.tasks_completed_on_time += 1
-                        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) completed DELAY task on time (prob={completion_prob:.2f})")
-                        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) completed DELAY task on time (prob={completion_prob:.2f})")
-                    else:
-                        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to complete DELAY task on time (prob={completion_prob:.2f})")
-                        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to complete DELAY task on time (prob={completion_prob:.2f})")
-                elif not success and event["type"] == EventType.HAZARD:
-                    self.model.outcomes.safety_incidents += 1
-                    self.model.outcomes.incident_points += 5 * event_severity
-                    self.model.outcomes.cost_overruns += 25000 * event_severity
-                    logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to mitigate HAZARD (prob={success_prob:.2f}), caused incident (points={5 * event_severity:.1f})")
-                    print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) failed to mitigate HAZARD (prob={success_prob:.2f}), caused incident (points={5 * event_severity:.1f})")
-            else:
-                failure_reason = []
-                if not budget_sufficient:
-                    failure_reason.append(f"Budget insufficient: {self.model.budget:.2f} < {resource_cost}")
-                if not equipment_sufficient:
-                    failure_reason.append(f"Equipment insufficient: {self.model.equipment} < {equipment_needed}")
-                logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) lacked resources to act on {event['type'].value} "
-                             f"({', '.join(failure_reason)})")
-                print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) lacked resources to act on {event['type'].value} "
-                      f"({', '.join(failure_reason)})")
-                if event["type"] == EventType.HAZARD:
-                    self.model.outcomes.safety_incidents += 1
-                    self.model.outcomes.incident_points += 5 * event_severity
-                    self.model.outcomes.cost_overruns += 25000 * event_severity
-                    logging.debug(f"Step {self.model.schedule.steps}: HAZARD incident due to insufficient resources (points={5 * event_severity:.1f})")
-                    print(f"Step {self.model.schedule.steps}: HAZARD incident due to insufficient resources (points={5 * event_severity:.1f})")
-        elif action == "report" and random.random() > 0.03:  # Further reduced failure chance
-            self.reports_sent += 1
-            success = self.model.send_report(self, event)
-            logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) report sent: {success}")
-            print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) report sent: {success}")
-        elif action == "escalate" and random.random() > 0.03:
-            self.reports_sent += 1
-            success = self.model.send_report(self, event)
-            logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) escalate sent: {success}")
-            print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) escalate sent: {success}")
-        elif action == "ignore" and event["type"] == EventType.HAZARD:
-            ignore_risk = 0.15 * (1 - self.experience) * event_severity
-            if random.random() < ignore_risk:
-                self.model.outcomes.safety_incidents += 1
-                self.model.outcomes.incident_points += 5 * event_severity
-                self.model.outcomes.cost_overruns += 25000 * event_severity
-                logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) ignored HAZARD, caused incident (prob={ignore_risk:.3f}, points={5 * event_severity:.1f})")
-                print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) ignored HAZARD, caused incident (prob={ignore_risk:.3f}, points={5 * event_severity:.1f})")
-
-        if action == "report" or action == "escalate":
-            self.workload = max(1, self.workload - 1 if success else self.workload + 1)
-            self.fatigue = min(self.fatigue + (0.1 if not success else -0.05), 1.0)
-        elif action == "act":
-            self.workload = min(self.workload + 1, 5)
+        self.q_table[event["type"]][action] += 1
+        self.last_event_action = action
+        
+        # Update stress and fatigue based on action
+        if action == "act" or action == "escalate":
             self.fatigue = min(self.fatigue + 0.1, 1.0)
-            if success:
-                self.experience = min(self.experience + 0.05, 1.0)
-                self.model.organizational_memory[event["type"]]['success_count'] += 1
-                self.model.organizational_memory[event["type"]]['best_action'] = action
-        else:
-            self.fatigue = max(0, self.fatigue - 0.05)
-
-        if self.last_event_action:
-            event_type, chosen_action = self.last_event_action
-            reward = 1.0 if success else -1.0 if action == "act" else 0.0
-            if event_type == EventType.HAZARD and action == "act" and success:
-                reward = 3.0 * event_severity
-            elif event_type == EventType.HAZARD and action == "ignore":
-                reward = -3.0 * event_severity
-            self.q_table[event_type][chosen_action] += 0.2 * (reward - self.q_table[event_type][chosen_action])
-
-    def step(self):
-        try:
-            events = self.model.get_events()
-            observed_events = self.observe_events(events)
-            for event in observed_events:
-                action = self.decide_action(event)
-                self.execute_action(event, action)
-                if action in ["report", "escalate"] and self.model.reporting_structure in [self.model.ReportingStructure.SELF, self.model.ReportingStructure.NONE]:
-                    for report in self.received_reports:
-                        if report["type"] == event["type"] and not report.get("acted_on", False):
-                            follow_up_action = self.decide_action(event, is_follow_up=True)
-                            self.execute_action(event, follow_up_action)
-                            report["acted_on"] = True
-                            logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed follow-up action {follow_up_action} for event {event['type'].value}")
-                            print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed follow-up action {follow_up_action} for event {event['type'].value}")
-            possible_moves = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False)
-            self.model.grid.move_agent(self, random.choice(possible_moves))
-        except Exception as e:
-            logging.error(f"Error in agent {self.unique_id} step: {traceback.format_exc()}")
-            print(f"Error in agent {self.unique_id} step: {e}")
+            self.stress = min(self.stress + 0.1, 1.0)
+        elif action == "ignore":
+            self.stress = max(self.stress - 0.05, 0.0)
+        
+        logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action {action} for event {event['type'].value}")
+        print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action {action} for event {event['type'].value}")
+        return action
