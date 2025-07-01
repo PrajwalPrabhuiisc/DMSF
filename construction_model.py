@@ -20,9 +20,6 @@ logging.basicConfig(filename='simulation_errors.log', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ConstructionModel(Model):
-    # Add the ReportingStructure as a class attribute to make it accessible
-    ReportingStructure = ReportingStructure
-    
     def __init__(self, width: int = 20, height: int = 20, reporting_structure: str = "dedicated",
                  org_structure: str = "functional", hazard_prob: float = 0.05, delay_prob: float = 0.10,
                  resource_prob: float = 0.05, comm_failure_dedicated: float = 0.05, 
@@ -179,7 +176,7 @@ class ConstructionModel(Model):
                 break
             except (PermissionError, OSError) as e:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.1 * (attempt + 1))
+                    time.sleep(0.2 * (attempt + 1))
                     continue
                 print(f"Error initializing Excel file {self.excel_filepath} after {max_attempts} attempts: {e}")
                 logging.error(f"Excel initialization error: {traceback.format_exc()}")
@@ -193,12 +190,12 @@ class ConstructionModel(Model):
         incident_factor = min(1.5, 1 + 0.1 * self.outcomes.safety_incidents)
         
         effective_hazard_prob = min(self.hazard_prob * org_factor * incident_factor, 0.75)
-        effective_delay_prob = min(self.delay_prob * org_factor, 0.70)  # Increased for DELAY
+        effective_delay_prob = min(self.delay_prob * org_factor, 0.80)  # Increased for DELAY
         effective_resource_prob = min(self.resource_prob + 0.05 * self.outcomes.safety_incidents, 0.50)
 
         event_types = [EventType.HAZARD, EventType.DELAY, EventType.RESOURCE_SHORTAGE]
         weights = [effective_hazard_prob, effective_delay_prob, effective_resource_prob]
-        num_events = max(1, np.random.choice([1, 2, 3], p=[0.5, 0.3, 0.2]))  # Increased chance of multiple events
+        num_events = max(1, np.random.choice([1, 2, 3], p=[0.4, 0.4, 0.2]))  # Increased chance of multiple events
         chosen_types = np.random.choice(event_types, size=num_events, p=np.array(weights)/sum(weights), replace=False)
 
         for event_type in chosen_types:
@@ -228,14 +225,18 @@ class ConstructionModel(Model):
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
-        comm_failure *= 1.0 if self.outcomes.safety_incidents > 3 else 0.9  # Reduced modifier
-        comm_failure *= 0.8 if self.org_structure == OrgStructure.FLAT else 1.1 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
+        comm_failure *= 0.9 if self.outcomes.safety_incidents > 3 else 0.8  # Reduced modifier
+        comm_failure *= 0.7 if self.org_structure == OrgStructure.FLAT else 1.0 if self.org_structure == OrgStructure.HIERARCHICAL else 0.9
 
         if random.random() > comm_failure:
             if self.reporting_structure == ReportingStructure.DEDICATED and sender.role == AgentRole.REPORTER:
                 for agent in self.schedule.agents:
                     if agent.role != AgentRole.REPORTER:
                         agent.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+                        if event["type"] == EventType.DELAY:
+                            action = agent.decide_action(event, is_follow_up=True)
+                            agent.execute_action(event, action)
+                            agent.received_reports[-1]["acted_on"] = True
             elif self.reporting_structure == ReportingStructure.SELF:
                 radius = 3 if self.org_structure == OrgStructure.FLAT else 2
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
@@ -273,9 +274,6 @@ class ConstructionModel(Model):
             logging.error(f"Error in log_metrics at step {self.schedule.steps}: {traceback.format_exc()}")
             print(f"Error in log_metrics at step {self.schedule.steps}: {e}")
 
-    def log_agent_situational_awareness(self):
-        pass
-
     def save_to_excel(self):
         max_attempts = 3
         for attempt in range(max_attempts):
@@ -304,7 +302,7 @@ class ConstructionModel(Model):
         try:
             events = self.get_events()
             for agent in self.schedule.agents:
-                agent.step()  # Call agent.step() instead of observe_events
+                agent.step()
             self.log_metrics()
         except Exception as e:
             logging.error(f"Error in model step {self.schedule.steps}: {traceback.format_exc()}")
@@ -318,7 +316,7 @@ class ConstructionModel(Model):
                 if i % 10 == 0:
                     self.budget += 10000
                     self.equipment += 10
-                self.save_to_excel()  # Save every step to ensure data capture
+                self.save_to_excel()
             logging.debug(f"Simulation {self.simulation_id} completed {steps} steps")
         except Exception as e:
             logging.error(f"Error in run_simulation: {traceback.format_exc()}")
