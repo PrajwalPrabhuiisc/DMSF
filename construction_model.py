@@ -11,7 +11,6 @@ from mesa import Model
 from mesa.time import RandomActivation
 from mesa.space import MultiGrid
 from mesa.datacollection import DataCollector
-from construction_agent import ConstructionAgent
 from enums import ReportingStructure, OrgStructure, AgentRole, EventType
 from data_classes import ProjectOutcomes
 
@@ -120,6 +119,7 @@ class ConstructionModel(Model):
         self.setup_excel_logging()
 
     def initialize_agents(self):
+        from construction_agent import ConstructionAgent  # Local import to avoid circular dependency
         num_workers = 50
         num_managers = random.randint(5, 10)
         num_directors = random.randint(1, 3)
@@ -211,7 +211,7 @@ class ConstructionModel(Model):
                 events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
         
         for event in events:
-            if event["type"] == EventType.HAZARD and random.random() < 0.15:
+            if event["type"] == EventType.HAZARD and random.random() < 0.10:  # Reduced probability
                 self.outcomes.safety_incidents += 1
                 self.outcomes.incident_points += 5 * event["severity"]
                 self.outcomes.cost_overruns += 25000 * event["severity"]
@@ -222,11 +222,12 @@ class ConstructionModel(Model):
         return events
 
     def send_report(self, sender, event: Dict):
+        from construction_agent import ConstructionAgent  # Local import to avoid circular dependency
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
-        comm_failure *= 0.9 if self.outcomes.safety_incidents > 3 else 0.8  # Reduced modifier
-        comm_failure *= 0.7 if self.org_structure == OrgStructure.FLAT else 1.0 if self.org_structure == OrgStructure.HIERARCHICAL else 0.9
+        comm_failure *= 0.8 if self.outcomes.safety_incidents > 3 else 0.7  # Further reduced
+        comm_failure *= 0.6 if self.org_structure == OrgStructure.FLAT else 1.0 if self.org_structure == OrgStructure.HIERARCHICAL else 0.8
 
         if random.random() > comm_failure:
             if self.reporting_structure == ReportingStructure.DEDICATED and sender.role == AgentRole.REPORTER:
@@ -237,6 +238,7 @@ class ConstructionModel(Model):
                             action = agent.decide_action(event, is_follow_up=True)
                             agent.execute_action(event, action)
                             agent.received_reports[-1]["acted_on"] = True
+                            logging.debug(f"Step {self.schedule.steps}: Agent {agent.unique_id} acted on DELAY report from Agent {sender.unique_id}")
             elif self.reporting_structure == ReportingStructure.SELF:
                 radius = 3 if self.org_structure == OrgStructure.FLAT else 2
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
@@ -248,6 +250,7 @@ class ConstructionModel(Model):
                             action = neighbor.decide_action(event, is_follow_up=True)
                             neighbor.execute_action(event, action)
                             neighbor.received_reports[-1]["acted_on"] = True
+                            logging.debug(f"Step {self.schedule.steps}: Agent {neighbor.unique_id} acted on DELAY report from Agent {sender.unique_id}")
                         break
             else:  # ReportingStructure.NONE
                 radius = 5
@@ -259,6 +262,7 @@ class ConstructionModel(Model):
                             action = neighbor.decide_action(event, is_follow_up=True)
                             neighbor.execute_action(event, action)
                             neighbor.received_reports[-1]["acted_on"] = True
+                            logging.debug(f"Step {self.schedule.steps}: Agent {neighbor.unique_id} acted on DELAY report from Agent {sender.unique_id}")
             logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) sent successfully for {event['type'].value}")
             return True
         logging.debug(f"Step {self.schedule.steps}: Report from Agent {sender.unique_id} ({sender.role.value}) failed for {event['type'].value}")
@@ -275,7 +279,7 @@ class ConstructionModel(Model):
             print(f"Error in log_metrics at step {self.schedule.steps}: {e}")
 
     def save_to_excel(self):
-        max_attempts = 3
+        max_attempts = 5  # Increased attempts
         for attempt in range(max_attempts):
             try:
                 mode = 'a' if os.path.exists(self.excel_filepath) else 'w'
@@ -288,7 +292,7 @@ class ConstructionModel(Model):
                 break
             except (PermissionError, OSError) as e:
                 if attempt < max_attempts - 1:
-                    time.sleep(0.2 * (attempt + 1))
+                    time.sleep(0.3 * (attempt + 1))  # Increased sleep
                     continue
                 print(f"Error saving to Excel {self.excel_filepath} after {max_attempts} attempts: {e}")
                 logging.error(f"Excel save error: {traceback.format_exc()}")
