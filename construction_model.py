@@ -190,25 +190,40 @@ class ConstructionModel(Model):
 
     def get_events(self):
         events = []
-        budget_factor = max(0.1, 1 - self.budget / 1000000)
-        org_factor = 1.2 if self.org_structure == OrgStructure.HIERARCHICAL else 0.8 if self.org_structure == OrgStructure.FLAT else 1.0
-        incident_factor = min(1.0, 1 + 0.05 * self.outcomes.safety_incidents)
-        worker_fatigue = np.mean([agent.fatigue for agent in self.schedule.agents if agent.role == AgentRole.WORKER])
+        # Simplified event probability calculations to ensure events occur
+        org_factor = 1.0 if self.org_structure == OrgStructure.FLAT else 1.2 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
+        incident_factor = min(1.5, 1 + 0.1 * self.outcomes.safety_incidents)
         
-        effective_hazard_prob = min(self.hazard_prob * (1 + 0.5 * worker_fatigue) * (1 + budget_factor) * org_factor * incident_factor, 0.5)
-        effective_delay_prob = self.delay_prob * (1 + 0.02 * budget_factor)
-        effective_resource_prob = self.resource_prob + 0.03 * sum(event["severity"] for event in events if event["type"] == EventType.HAZARD) + 0.02 * sum(event["severity"] for event in events if event["type"] == EventType.DELAY)
+        # Increase base probabilities to ensure events
+        effective_hazard_prob = min(self.hazard_prob * org_factor * incident_factor, 0.75)
+        effective_delay_prob = min(self.delay_prob * org_factor, 0.50)
+        effective_resource_prob = min(self.resource_prob + 0.05 * self.outcomes.safety_incidents, 0.50)
 
-        if random.random() < effective_hazard_prob:
-            severity = random.uniform(0.5, 1.0)
-            events.append({"type": EventType.HAZARD, "severity": severity})
-        if random.random() < effective_delay_prob:
-            severity = random.uniform(0.3, 0.7)
-            events.append({"type": EventType.DELAY, "severity": severity})
-            self.outcomes.total_tasks += 1
-        if random.random() < effective_resource_prob:
-            severity = random.uniform(0.2, 0.5)
-            events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
+        # Generate at least one event per step to ensure activity
+        event_types = [EventType.HAZARD, EventType.DELAY, EventType.RESOURCE_SHORTAGE]
+        weights = [effective_hazard_prob, effective_delay_prob, effective_resource_prob]
+        num_events = max(1, np.random.choice([1, 2], p=[0.7, 0.3]))  # 70% chance of 1 event, 30% chance of 2
+        chosen_types = np.random.choice(event_types, size=num_events, p=np.array(weights)/sum(weights), replace=False)
+
+        for event_type in chosen_types:
+            if event_type == EventType.HAZARD:
+                severity = random.uniform(0.5, 1.0)
+                events.append({"type": EventType.HAZARD, "severity": severity})
+            elif event_type == EventType.DELAY:
+                severity = random.uniform(0.3, 0.7)
+                events.append({"type": EventType.DELAY, "severity": severity})
+                self.outcomes.total_tasks += 1
+            elif event_type == EventType.RESOURCE_SHORTAGE:
+                severity = random.uniform(0.2, 0.5)
+                events.append({"type": EventType.RESOURCE_SHORTAGE, "severity": severity})
+        
+        # Ensure unaddressed hazards contribute to safety incidents
+        for event in events:
+            if event["type"] == EventType.HAZARD and random.random() < 0.1:  # 10% chance unaddressed hazard causes incident
+                self.outcomes.safety_incidents += 1
+                self.outcomes.incident_points += 5 * event["severity"]
+                self.outcomes.cost_overruns += 25000 * event["severity"]
+                print(f"Step {self.schedule.steps}: Unaddressed HAZARD caused incident (points={5 * event['severity']:.1f})")
         
         return events
 
@@ -216,8 +231,8 @@ class ConstructionModel(Model):
         comm_failure = (self.comm_failure_dedicated if self.reporting_structure == ReportingStructure.DEDICATED else
                         self.comm_failure_self if self.reporting_structure == ReportingStructure.SELF else
                         self.comm_failure_none)
-        comm_failure *= 1.3 if self.outcomes.safety_incidents > 5 else 1.0
-        comm_failure *= 0.8 if self.org_structure == OrgStructure.FLAT else 1.2 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
+        comm_failure *= 1.2 if self.outcomes.safety_incidents > 3 else 1.0
+        comm_failure *= 0.9 if self.org_structure == OrgStructure.FLAT else 1.1 if self.org_structure == OrgStructure.HIERARCHICAL else 1.0
 
         if random.random() > comm_failure:
             if self.reporting_structure == ReportingStructure.DEDICATED and sender.role == AgentRole.REPORTER:
@@ -236,8 +251,8 @@ class ConstructionModel(Model):
                 radius = 5
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, radius=radius)
                 for neighbor in neighbors:
-                    if neighbor.role != AgentRole.REPORTER:
-                        agent.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
+                    if neighbor.role in [AgentRole.MANAGER, AgentRole.DIRECTOR]:
+                        neighbor.received_reports.append({"type": event["type"], "severity": event["severity"], "acted_on": False})
             return True
         return False
 
