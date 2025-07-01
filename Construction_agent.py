@@ -107,7 +107,7 @@ class ConstructionAgent(mesa.Agent):
                          f"Perception={self.sa.perception:.2f}, Comprehension={self.sa.comprehension:.2f}, Projection={self.sa.projection:.2f}")
             print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) observed event {event['type'].value}, SA updated: "
                   f"Perception={self.sa.perception:.2f}, Comprehension={self.sa.comprehension:.2f}, Projection={self.sa.projection:.2f}")
-            observed_events.append(event)
+            observed_events.append(event) 
         return observed_events
 
     def decide_action(self, event: Optional[Dict], is_follow_up: bool = False) -> str:
@@ -142,8 +142,8 @@ class ConstructionAgent(mesa.Agent):
         action = np.random.choice(actions, p=action_probs)
         
         # Adjust action based on role and reporting structure
-        if self.role == AgentRole.WORKER and action == "escalate" and self.model.reporting_structure == ReportingStructure.CENTRALIZED:
-            action = "report"  # Workers report instead of escalate in centralized structures
+        if self.role == AgentRole.WORKER and action == "escalate" and self.model.reporting_structure == ReportingStructure.DEDICATED:
+            action = "report"  # Workers report instead of escalate in dedicated structures
         elif self.role == AgentRole.REPORTER and action == "act":
             action = "report"  # Reporters prefer reporting over acting
         elif self.role == AgentRole.DIRECTOR and action == "ignore":
@@ -353,7 +353,7 @@ class ConstructionAgent(mesa.Agent):
             print(f"Error processing received reports for Agent {self.unique_id}: {e}")
 
     def update_agent_state(self):
-        """Update agent's internal state each step"""
+        """Update agent's internal state each Step"""
         try:
             # Natural recovery from fatigue and stress
             self.fatigue = max(0, self.fatigue - 0.02)
