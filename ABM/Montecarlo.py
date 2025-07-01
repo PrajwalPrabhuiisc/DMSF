@@ -28,7 +28,7 @@ def run_simulation(config, run_id, seed):
             reporting_structure=config['reporting_structure'],
             org_structure=config['org_structure'],
             hazard_prob=config['hazard_prob'],
-            delay_prob=config['delay_prob'],
+            delay_prob=0.10,  # Fixed at 0.10
             resource_prob=0.05,
             comm_failure_dedicated=config['comm_failure_dedicated'],
             comm_failure_self=config['comm_failure_self'],
@@ -70,7 +70,6 @@ def aggregate_results(results, output_file):
         model_df['reporting_structure'] = res['config']['reporting_structure']
         model_df['org_structure'] = res['config']['org_structure']
         model_df['hazard_prob'] = res['config']['hazard_prob']
-        model_df['delay_prob'] = res['config']['delay_prob']
         model_df['reporter_detection'] = res['config']['reporter_detection']
         model_dfs.append(model_df)
         
@@ -79,7 +78,6 @@ def aggregate_results(results, output_file):
         agent_df['reporting_structure'] = res['config']['reporting_structure']
         agent_df['org_structure'] = res['config']['org_structure']
         agent_df['hazard_prob'] = res['config']['hazard_prob']
-        agent_df['delay_prob'] = res['config']['delay_prob']
         agent_df['reporter_detection'] = res['config']['reporter_detection']
         agent_dfs.append(agent_df)
     
@@ -88,10 +86,9 @@ def aggregate_results(results, output_file):
         print("Error: No valid simulation results to aggregate")
         return
     
-    model_summary = pd.concat(model_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'delay_prob', 'reporter_detection', 'Step']).agg(['mean', 'std']).reset_index()
-    agent_summary = pd.concat(agent_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'delay_prob', 'reporter_detection', 'Step', 'Role']).agg(['mean', 'std']).reset_index()
+    model_summary = pd.concat(model_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'reporter_detection', 'Step']).agg(['mean', 'std']).reset_index()
+    agent_summary = pd.concat(agent_dfs).groupby(['reporting_structure', 'org_structure', 'hazard_prob', 'reporter_detection', 'Step', 'Role']).agg(['mean', 'std']).reset_index()
     
-    # Write aggregated results with lock
     with file_lock:
         max_attempts = 3
         for attempt in range(max_attempts):
@@ -108,27 +105,25 @@ def aggregate_results(results, output_file):
                     continue
                 print(f"Error saving to {output_file} after {max_attempts} attempts: {e}")
                 logging.error(f"Error saving to {output_file}: {str(e)}")
-                # Fallback to CSV
                 model_summary.to_csv(output_file.replace('.xlsx', '_model_summary.csv'), index=False)
                 agent_summary.to_csv(output_file.replace('.xlsx', '_agent_summary.csv'), index=False)
                 print(f"Fallback: Saved to CSV files")
                 logging.debug(f"Fallback: Saved to CSV files")
 
 def main():
-    # Configurations
+    # Configurations (fixed delay_prob at 0.10)
     configs = [
         {
             'reporting_structure': rs.value,
             'org_structure': os.value,
             'hazard_prob': hp,
-            'delay_prob': dp,
             'comm_failure_dedicated': 0.05,
             'comm_failure_self': 0.10,
             'comm_failure_none': 0.50,
             'reporter_detection': rd
         }
-        for rs, os, hp, dp, rd in product(
-            ReportingStructure, OrgStructure, [0.05, 0.10, 0.15], [0.05, 0.10, 0.15], [0.90, 0.95, 0.99]
+        for rs, os, hp, rd in product(
+            ReportingStructure, OrgStructure, [0.05, 0.10, 0.15], [0.90, 0.95, 0.99]
         )
     ]
     n_runs = 100
