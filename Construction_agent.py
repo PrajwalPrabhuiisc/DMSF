@@ -47,6 +47,30 @@ class ConstructionAgent(mesa.Agent):
             self.detection_accuracy = self.model.director_detection
             self.reporting_probability = self.model.director_reporting
 
+    def step(self):
+        """Main step function called by the scheduler"""
+        try:
+            # Get events from the model
+            events = self.model.get_events()
+            
+            # Observe events
+            observed_events = self.observe_events(events)
+            
+            # Process each observed event
+            for event in observed_events:
+                action = self.decide_action(event)
+                self.execute_action(event, action)
+            
+            # Process received reports
+            self.process_received_reports()
+            
+            # Update agent state
+            self.update_agent_state()
+            
+        except Exception as e:
+            logging.error(f"Error in agent step for Agent {self.unique_id}: {traceback.format_exc()}")
+            print(f"Error in agent step for Agent {self.unique_id}: {e}")
+
     def observe_events(self, events: List[Optional[Dict]]) -> List[Dict]:
         observed_events = []
         for event in events:
@@ -140,3 +164,237 @@ class ConstructionAgent(mesa.Agent):
         logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action {action} for event {event['type'].value}")
         print(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) decided action {action} for event {event['type'].value}")
         return action
+
+    def execute_action(self, event: Dict, action: str):
+        """Execute the decided action for an event"""
+        try:
+            event_type = event["type"]
+            event_severity = event.get("severity", 1.0)
+            
+            if action == "ignore":
+                self._handle_ignore_action(event)
+            elif action == "report":
+                self._handle_report_action(event)
+            elif action == "act":
+                self._handle_act_action(event)
+            elif action == "escalate":
+                self._handle_escalate_action(event)
+            
+            # Update organizational memory based on action effectiveness
+            self._update_organizational_memory(event_type, action)
+            
+            logging.debug(f"Step {self.model.schedule.steps}: Agent {self.unique_id} ({self.role.value}) executed {action} for {event_type.value}")
+            
+        except Exception as e:
+            logging.error(f"Error executing action {action} for Agent {self.unique_id}: {traceback.format_exc()}")
+            print(f"Error executing action {action} for Agent {self.unique_id}: {e}")
+
+    def _handle_ignore_action(self, event: Dict):
+        """Handle ignore action - minimal impact but potential consequences"""
+        event_type = event["type"]
+        event_severity = event.get("severity", 1.0)
+        
+        # Ignoring events can lead to escalation of problems
+        if event_type == EventType.HAZARD and random.random() < 0.3 * event_severity:
+            self.model.outcomes.safety_incidents += 1
+            self.model.outcomes.incident_points += 3 * event_severity
+            logging.debug(f"Ignored HAZARD led to safety incident")
+        elif event_type == EventType.DELAY and random.random() < 0.4 * event_severity:
+            self.model.outcomes.cost_overruns += 15000 * event_severity
+            logging.debug(f"Ignored DELAY led to cost overrun")
+
+    def _handle_report_action(self, event: Dict):
+        """Handle report action - communicate the event to others"""
+        if random.random() < self.reporting_probability:
+            success = self.model.send_report(self, event)
+            if success:
+                self.reports_sent += 1
+                # Slight positive impact on situational awareness
+                self.sa.comprehension = min(self.sa.comprehension + 5, 100)
+                logging.debug(f"Agent {self.unique_id} successfully reported {event['type'].value}")
+            else:
+                logging.debug(f"Agent {self.unique_id} failed to report {event['type'].value}")
+
+    def _handle_act_action(self, event: Dict):
+        """Handle act action - directly address the event"""
+        event_type = event["type"]
+        event_severity = event.get("severity", 1.0)
+        
+        # Calculate action effectiveness based on agent capabilities
+        effectiveness = self._calculate_action_effectiveness(event)
+        
+        if event_type == EventType.HAZARD:
+            if effectiveness > 0.6:
+                # Successful mitigation
+                self.model.outcomes.incident_points = max(0, self.model.outcomes.incident_points - 2)
+                self.sa.projection = min(self.sa.projection + 10, 100)
+            else:
+                # Partial mitigation
+                if random.random() < 0.2:
+                    self.model.outcomes.safety_incidents += 0.5
+                    self.model.outcomes.incident_points += 1 * event_severity
+                    
+        elif event_type == EventType.DELAY:
+            if effectiveness > 0.5:
+                # Successfully handle delay
+                self.model.outcomes.tasks_completed_on_time += 1
+                self.model.outcomes.total_tasks += 1
+            else:
+                # Partial success
+                self.model.outcomes.total_tasks += 1
+                if random.random() < 0.3:
+                    self.model.outcomes.cost_overruns += 8000 * event_severity
+                    
+        elif event_type == EventType.RESOURCE_SHORTAGE:
+            if effectiveness > 0.4:
+                # Resource issue resolved
+                self.model.budget = max(self.model.budget - 5000 * event_severity, 0)
+                self.model.equipment = max(self.model.equipment - int(10 * event_severity), 0)
+            else:
+                # Resource issue persists
+                self.model.budget = max(self.model.budget - 12000 * event_severity, 0)
+                self.model.equipment = max(self.model.equipment - int(20 * event_severity), 0)
+
+    def _handle_escalate_action(self, event: Dict):
+        """Handle escalate action - escalate to higher authority"""
+        event_type = event["type"]
+        event_severity = event.get("severity", 1.0)
+        
+        # Find higher-level agents to escalate to
+        target_roles = []
+        if self.role == AgentRole.WORKER:
+            target_roles = [AgentRole.MANAGER, AgentRole.DIRECTOR]
+        elif self.role == AgentRole.MANAGER:
+            target_roles = [AgentRole.DIRECTOR]
+        elif self.role == AgentRole.REPORTER:
+            target_roles = [AgentRole.MANAGER, AgentRole.DIRECTOR]
+        
+        if target_roles:
+            # Find nearby agents with target roles
+            neighbors = self.model.grid.get_neighbors(self.pos, moore=True, radius=5)
+            targets = [agent for agent in neighbors if agent.role in target_roles]
+            
+            if targets:
+                target = random.choice(targets)
+                escalation_report = {
+                    "type": event_type,
+                    "severity": event_severity * 1.2,  # Escalated severity
+                    "escalated_from": self.role,
+                    "acted_on": False
+                }
+                target.received_reports.append(escalation_report)
+                
+                # Target agent immediately considers action
+                action = target.decide_action(escalation_report, is_follow_up=True)
+                target.execute_action(escalation_report, action)
+                escalation_report["acted_on"] = True
+                
+                logging.debug(f"Agent {self.unique_id} escalated {event_type.value} to Agent {target.unique_id}")
+
+    def _calculate_action_effectiveness(self, event: Dict) -> float:
+        """Calculate how effective an agent's action will be"""
+        base_effectiveness = 0.5
+        
+        # Role-based effectiveness
+        role_multipliers = {
+            AgentRole.WORKER: 0.6,
+            AgentRole.MANAGER: 0.8,
+            AgentRole.DIRECTOR: 0.9,
+            AgentRole.REPORTER: 0.4  # Reporters are better at reporting than acting
+        }
+        
+        effectiveness = base_effectiveness * role_multipliers[self.role]
+        
+        # Experience factor
+        effectiveness += self.experience * 0.3
+        
+        # Fatigue and stress penalties
+        effectiveness -= self.fatigue * 0.2
+        effectiveness -= self.stress * 0.15
+        
+        # Workload penalty
+        effectiveness -= (self.workload / 5) * 0.1
+        
+        # Situational awareness bonus
+        sa_bonus = (self.sa.total_score() / 300) * 0.2
+        effectiveness += sa_bonus
+        
+        return max(0.1, min(1.0, effectiveness))
+
+    def _update_organizational_memory(self, event_type: EventType, action: str):
+        """Update organizational memory based on action outcomes"""
+        if event_type in self.model.organizational_memory:
+            memory = self.model.organizational_memory[event_type]
+            
+            # Simple success tracking (could be enhanced with actual outcome measurement)
+            if action in ["act", "escalate", "report"]:
+                memory['success_count'] += 1
+                if memory['best_action'] is None or action == memory['best_action']:
+                    memory['best_action'] = action
+
+    def process_received_reports(self):
+        """Process reports received from other agents"""
+        try:
+            for report in self.received_reports:
+                if not report.get("acted_on", False):
+                    # Decide whether to act on the received report
+                    if random.random() < 0.7:  # 70% chance to act on received reports
+                        action = self.decide_action(report, is_follow_up=True)
+                        if action != "ignore":
+                            self.execute_action(report, action)
+                            report["acted_on"] = True
+                            logging.debug(f"Agent {self.unique_id} acted on received report: {report['type'].value}")
+                    
+                    # Update situational awareness based on report
+                    self.sa.comprehension = min(self.sa.comprehension + 3, 100)
+                    
+        except Exception as e:
+            logging.error(f"Error processing received reports for Agent {self.unique_id}: {traceback.format_exc()}")
+            print(f"Error processing received reports for Agent {self.unique_id}: {e}")
+
+    def update_agent_state(self):
+        """Update agent's internal state each step"""
+        try:
+            # Natural recovery from fatigue and stress
+            self.fatigue = max(0, self.fatigue - 0.02)
+            self.stress = max(0, self.stress - 0.03)
+            
+            # Experience growth
+            self.experience = min(1.0, self.experience + 0.001)
+            
+            # Workload variation
+            if random.random() < 0.1:  # 10% chance of workload change
+                self.workload = max(1, min(5, self.workload + random.choice([-1, 1])))
+            
+            # Situational awareness decay
+            self.sa.perception = max(0, self.sa.perception - 1)
+            self.sa.comprehension = max(0, self.sa.comprehension - 0.5)
+            self.sa.projection = max(0, self.sa.projection - 0.8)
+            
+            # Clear old received reports (keep only last 5)
+            if len(self.received_reports) > 5:
+                self.received_reports = self.received_reports[-5:]
+                
+        except Exception as e:
+            logging.error(f"Error updating agent state for Agent {self.unique_id}: {traceback.format_exc()}")
+            print(f"Error updating agent state for Agent {self.unique_id}: {e}")
+
+    def move(self):
+        """Move agent to a random neighboring cell"""
+        try:
+            possible_steps = self.model.grid.get_neighborhood(
+                self.pos, moore=True, include_center=False
+            )
+            new_position = self.random.choice(possible_steps)
+            self.model.grid.move_agent(self, new_position)
+            self.pos = new_position
+        except Exception as e:
+            logging.error(f"Error moving Agent {self.unique_id}: {e}")
+
+    def get_neighbors_by_role(self, role: AgentRole, radius: int = 3) -> List['ConstructionAgent']:
+        """Get neighboring agents with a specific role"""
+        neighbors = self.model.grid.get_neighbors(self.pos, moore=True, radius=radius)
+        return [agent for agent in neighbors if agent.role == role]
+
+    def __str__(self):
+        return f"Agent {self.unique_id} ({self.role.value}) - SA: {self.sa.total_score():.1f}, Experience: {self.experience:.2f}, Fatigue: {self.fatigue:.2f}"
