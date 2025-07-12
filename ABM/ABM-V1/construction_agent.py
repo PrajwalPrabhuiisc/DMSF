@@ -68,21 +68,31 @@ class ConstructionAgent:
         sa_reduction = 0.7 if self.model.outcomes.safety_incidents > 5 else 1.0
 
         if random.random() < self.detection_accuracy * self.detection_modifier:
+            # Stochastic SA update
+            severity = event.get("severity", 0.5)
+            noise_std = 0.2 + 0.3 * self.fatigue  # Higher fatigue increases variance
+            random_noise = random.gauss(0, noise_std)
+            
             if self.role == AgentRole.REPORTER:
                 self.awareness.perception = min(
-                    self.awareness.perception + self.detection_accuracy * 50 * org_sa_modifier * sa_reduction, 100)
+                    self.awareness.perception + self.detection_accuracy * 50 * (1 + random_noise) * severity * (1 - self.fatigue) * org_sa_modifier * sa_reduction, 100)
                 self.awareness.comprehension = min(
-                    self.awareness.comprehension + self.detection_accuracy * 30 * org_sa_modifier * sa_reduction, 100)
+                    self.awareness.comprehension + self.detection_accuracy * 30 * (1 + random_noise) * severity * (1 - self.workload / 5) * org_sa_modifier * sa_reduction, 100)
+                self.awareness.projection = min(
+                    self.awareness.projection + self.detection_accuracy * 20 * (1 + random_noise) * severity * self.experience * org_sa_modifier * sa_reduction, 100)
             else:
                 self.awareness.perception = min(
-                    self.awareness.perception + self.detection_accuracy * 40 * (1 + self.experience) * org_sa_modifier * sa_reduction, 100)
+                    self.awareness.perception + self.detection_accuracy * 40 * (1 + random_noise) * severity * (1 + self.experience) * org_sa_modifier * sa_reduction, 100)
                 self.awareness.comprehension = min(
-                    self.awareness.comprehension + self.detection_accuracy * 20 * (1 - self.workload / 5) * org_sa_modifier * sa_reduction, 100)
+                    self.awareness.comprehension + self.detection_accuracy * 20 * (1 + random_noise) * severity * (1 - self.workload / 5) * org_sa_modifier * sa_reduction, 100)
+                self.awareness.projection = min(
+                    self.awareness.projection + self.detection_accuracy * 15 * (1 + random_noise) * severity * self.experience * org_sa_modifier * sa_reduction, 100)
 
             logging.debug(
                 f"Agent {self.unique_id} ({self.role.value}) observed event {event.get('type', 'None')} "
                 f"at step {self.model.schedule.steps}, SA updated: "
-                f"P={self.awareness.perception:.2f}, C={self.awareness.comprehension:.2f}"
+                f"P={self.awareness.perception:.2f}, C={self.awareness.comprehension:.2f}, Proj={self.awareness.projection:.2f}, "
+                f"Random_Noise={random_noise:.2f}"
             )
 
             action = self.decide_action(event)
@@ -146,6 +156,12 @@ class ConstructionAgent:
 
     def execute_action(self, event: Dict, action: ActionType) -> bool:
         success = False
+        severity = event.get("severity", 0.5)
+        noise_std = 0.2 + 0.3 * self.fatigue
+        random_noise = random.gauss(0, noise_std)
+        org_sa_modifier = 1.2 if self.model.org_structure == OrgStructure.FLAT else 1.0 if self.model.org_structure == OrgStructure.FUNCTIONAL else 0.8
+        sa_reduction = 0.7 if self.model.outcomes.safety_incidents > 5 else 1.0
+
         if action == ActionType.REPORT:
             report = {"event": event, "source": self.role.value, "timestamp": self.model.schedule.steps}
             if self.send_report(report):
@@ -164,6 +180,13 @@ class ConstructionAgent:
                     f"due to insufficient budget {self.model.budget:.2f} at step {self.model.schedule.steps}"
                 )
                 return False
+            # Update SA for ACT
+            self.awareness.perception = min(
+                self.awareness.perception + self.detection_accuracy * 20 * (1 + random_noise) * severity * (1 + self.experience) * org_sa_modifier * sa_reduction, 100)
+            self.awareness.comprehension = min(
+                self.awareness.comprehension + self.detection_accuracy * 15 * (1 + random_noise) * severity * (1 - self.workload / 5) * org_sa_modifier * sa_reduction, 100)
+            self.awareness.projection = min(
+                self.awareness.projection + self.detection_accuracy * 10 * (1 + random_noise) * severity * self.experience * org_sa_modifier * sa_reduction, 100)
             if event["type"] == EventType.HAZARD:
                 if self.role == AgentRole.WORKER:
                     self.model.outcomes.safety_incidents += 1
@@ -203,6 +226,11 @@ class ConstructionAgent:
                     )
             self.actions_taken[action] += 1
             success = True
+            logging.debug(
+                f"Agent {self.unique_id} ({self.role.value}) updated SA for ACT on {event.get('type')}: "
+                f"P={self.awareness.perception:.2f}, C={self.awareness.comprehension:.2f}, Proj={self.awareness.projection:.2f}, "
+                f"Random_Noise={random_noise:.2f}"
+            )
         elif action == ActionType.ESCALATE:
             if self.model.budget < 1500:
                 logging.warning(
@@ -210,6 +238,13 @@ class ConstructionAgent:
                     f"due to insufficient budget {self.model.budget:.2f} at step {self.model.schedule.steps}"
                 )
                 return False
+            # Update SA for ESCALATE
+            self.awareness.perception = min(
+                self.awareness.perception + self.detection_accuracy * 15 * (1 + random_noise) * severity * (1 + self.experience) * org_sa_modifier * sa_reduction, 100)
+            self.awareness.comprehension = min(
+                self.awareness.comprehension + self.detection_accuracy * 10 * (1 + random_noise) * severity * (1 - self.workload / 5) * org_sa_modifier * sa_reduction, 100)
+            self.awareness.projection = min(
+                self.awareness.projection + self.detection_accuracy * 8 * (1 + random_noise) * severity * self.experience * org_sa_modifier * sa_reduction, 100)
             report = {"event": event, "source": self.role.value, "timestamp": self.model.schedule.steps}
             if self.send_report(report):
                 self.reports_sent += 1
@@ -218,6 +253,8 @@ class ConstructionAgent:
                 success = True
                 logging.debug(
                     f"Agent {self.unique_id} ({self.role.value}) executed ESCALATE action for event {event.get('type')} "
-                    f"at step {self.model.schedule.steps}, budget={self.model.budget:.2f}"
+                    f"at step {self.model.schedule.steps}, budget={self.model.budget:.2f}, "
+                    f"SA updated: P={self.awareness.perception:.2f}, C={self.awareness.comprehension:.2f}, Proj={self.awareness.projection:.2f}, "
+                    f"Random_Noise={random_noise:.2f}"
                 )
         return success
