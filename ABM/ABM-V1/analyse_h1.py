@@ -49,7 +49,7 @@ def load_simulation_data(directory="simulation_outputs"):
             # Load Configuration sheet
             config_df = pd.read_excel(file, sheet_name="Configuration", engine="openpyxl")
             sim_id = config_df["Simulation_ID"].iloc[0]
-            org_structure = config_df ["Org_Structure"].iloc[0]
+            org_structure = config_df["Org_Structure"].iloc[0]
             reporting_structure = config_df["Reporting_Structure"].iloc[0]
 
             if org_structure != "functional":
@@ -58,9 +58,8 @@ def load_simulation_data(directory="simulation_outputs"):
 
             # Load Model_Metrics sheet
             metrics_df = pd.read_excel(file, sheet_name="Model_Metrics", engine="openpyxl")
-            # Clean Step column
             metrics_df["Step"] = metrics_df["Step"].apply(clean_step_value)
-            metrics_df = metrics_df.dropna(subset=["Step"])  # Drop rows with invalid steps
+            metrics_df = metrics_df.dropna(subset=["Step"])
             if metrics_df.empty:
                 logging.warning(f"Skipping {file}: No valid steps after cleaning")
                 continue
@@ -70,7 +69,6 @@ def load_simulation_data(directory="simulation_outputs"):
                 logging.warning(f"Skipping {file}: No valid steps found")
                 continue
 
-            # Use Step 100 if available, else use last available step
             if 100 in metrics_df["Step"].values:
                 final_step = metrics_df[metrics_df["Step"] == 100]
                 step_used = 100
@@ -79,7 +77,6 @@ def load_simulation_data(directory="simulation_outputs"):
                 step_used = max_step
                 logging.warning(f"No data for Step 100 in {file}. Using Step {max_step} instead.")
 
-            # Clean SA columns
             for col in sa_columns:
                 if col in final_step.columns:
                     final_step[col] = final_step[col].apply(clean_numeric_value)
@@ -89,12 +86,7 @@ def load_simulation_data(directory="simulation_outputs"):
                     logging.warning(f"Column {col} missing in {file} (Step {step_used})")
                     final_step[col] = np.nan
 
-            # Calculate Average_SA
             final_step["Average_SA"] = final_step[sa_columns].mean(axis=1, numeric_only=True)
-            if final_step["Average_SA"].isna().all():
-                logging.warning(f"Skipping {file}: Average_SA is NaN for Step {step_used}")
-                continue
-
             final_step = final_step.copy()
             final_step["Simulation_ID"] = sim_id
             final_step["Reporting_Structure"] = reporting_structure
@@ -102,14 +94,19 @@ def load_simulation_data(directory="simulation_outputs"):
             all_metrics.append(final_step)
             simulation_counts[reporting_structure] += 1
 
-            # Load Agent_SA sheet for decision tracking
+            # Load Agent_SA sheet
             agent_df = pd.read_excel(file, sheet_name="Agent_SA", engine="openpyxl")
             agent_df["Step"] = agent_df["Step"].apply(clean_step_value)
             agent_df = agent_df.dropna(subset=["Step"])
+            # Compute SA_Level for step 100 (or max step)
             agent_step = agent_df[agent_df["Step"] == step_used]
-            if not agent_step.empty:
+            agent_initial = agent_df[agent_df["Step"] == 0]
+            if not agent_step.empty and not agent_initial.empty:
                 agent_step = agent_step.copy()
-                for col in ["Reports_Sent", "Reports_Received", "Workload", "SA_Score"]:
+                agent_initial_dict = {row["Agent_ID"]: row["SA_Score"] for _, row in agent_initial.iterrows()}
+                agent_step["SA_Level"] = agent_step.apply(
+                    lambda row: row["SA_Score"] - agent_initial_dict.get(row["Agent_ID"], 0), axis=1)
+                for col in ["Reports_Sent", "Reports_Received", "Workload", "SA_Score", "SA_Level"]:
                     if col in agent_step.columns:
                         agent_step[col] = agent_step[col].apply(clean_numeric_value)
                         if agent_step[col].isna().all():
@@ -121,7 +118,7 @@ def load_simulation_data(directory="simulation_outputs"):
                 agent_step["Step_Used"] = step_used
                 agent_decisions.append(agent_step)
             else:
-                logging.warning(f"No Agent_SA data for Step {step_used} in {file}")
+                logging.warning(f"No Agent_SA data for Step 0 or {step_used} in {file}")
 
             logging.info(f"Loaded data from {file} (Step {step_used}, Reporting_Structure: {reporting_structure})")
         except Exception as e:
@@ -133,8 +130,6 @@ def load_simulation_data(directory="simulation_outputs"):
 
     metrics_df = pd.concat(all_metrics, ignore_index=True)
     agent_df = pd.concat(agent_decisions, ignore_index=True) if agent_decisions else pd.DataFrame()
-
-    # Log simulation counts
     logging.info(f"Simulation counts: {simulation_counts}")
     if sum(simulation_counts.values()) < 2:
         raise ValueError("Insufficient simulations for ANOVA (need at least 2 reporting structures)")
@@ -164,8 +159,7 @@ def estimate_required_simulations(effect_size, alpha=0.05, power=0.8, k_groups=3
         return None
     try:
         power_analysis = FTestAnovaPower()
-        # Cap effect size to prevent numerical instability
-        effect_size = min(effect_size, 10.0)  # Arbitrary cap to avoid fdtri errors
+        effect_size = min(effect_size, 10.0)
         sample_size = power_analysis.solve_power(effect_size=effect_size, alpha=alpha, power=power, k_groups=k_groups)
         return int(np.ceil(sample_size))
     except Exception as e:
@@ -173,7 +167,7 @@ def estimate_required_simulations(effect_size, alpha=0.05, power=0.8, k_groups=3
         return None
 
 def summarize_agent_decisions(agent_df):
-    """Summarize agent decisions (reports sent/received, actions) by role and reporting structure."""
+    """Summarize agent decisions and SA_Level by role and reporting structure."""
     if agent_df.empty:
         print("\nNo Agent_SA data available for decision tracking.")
         return
@@ -183,6 +177,7 @@ def summarize_agent_decisions(agent_df):
         "Reports_Received": ["mean", "std"],
         "Workload": ["mean", "std"],
         "SA_Score": ["mean", "std"],
+        "SA_Level": ["mean", "std"],
         "Step_Used": "mean"
     }).round(2)
 
@@ -190,22 +185,26 @@ def summarize_agent_decisions(agent_df):
     print(decision_summary)
 
 def analyze_h1(metrics_df, agent_df):
-    """Test H1 using one-way ANOVA on Average_SA at last step (preferably Step 100)."""
-    print("\nH1: Dedicated reporting structure results in higher Average_SA than Self or None")
+    """Test H1 using one-way ANOVA on SA_Level at last step (preferably Step 100)."""
+    print("\nH1: Dedicated reporting structure results in higher SA_Level than Self or None")
 
-    # Calculate Average_SA if not present
-    if "Average_SA" not in metrics_df.columns:
-        sa_columns = ["Worker_SA", "Manager_SA", "Director_SA", "Reporter_SA"]
-        metrics_df["Average_SA"] = metrics_df[sa_columns].mean(axis=1, numeric_only=True)
+    # Compute Average_SA_Level from Agent_SA
+    if not agent_df.empty:
+        average_sa_level = agent_df.groupby(["Simulation_ID", "Reporting_Structure"])["SA_Level"].mean().reset_index()
+        metrics_df = metrics_df.merge(
+            average_sa_level[["Simulation_ID", "SA_Level"]],
+            on="Simulation_ID",
+            how="left"
+        )
+        metrics_df = metrics_df.rename(columns={"SA_Level": "Average_SA_Level"})
 
-    # Drop rows where Average_SA is NaN
-    metrics_df = metrics_df.dropna(subset=["Average_SA"])
+    metrics_df = metrics_df.dropna(subset=["Average_SA_Level"])
     if metrics_df.empty:
-        raise ValueError("No valid Average_SA data available for ANOVA")
+        raise ValueError("No valid Average_SA_Level data available for ANOVA")
 
-    # Group Average_SA by Reporting_Structure
+    # ANOVA on Average_SA_Level
     sa_groups = [
-        metrics_df[metrics_df["Reporting_Structure"] == rep]["Average_SA"]
+        metrics_df[metrics_df["Reporting_Structure"] == rep]["Average_SA_Level"]
         for rep in ["dedicated", "self", "none"]
         if rep in metrics_df["Reporting_Structure"].values
     ]
@@ -213,32 +212,27 @@ def analyze_h1(metrics_df, agent_df):
     if len(sa_groups) < 2:
         raise ValueError("Not enough reporting structures with data for ANOVA (need at least 2)")
 
-    # One-way ANOVA
     anova_result = f_oneway(*sa_groups)
-    print(f"\nOne-Way ANOVA Results for Average_SA (Last Step):")
+    print(f"\nOne-Way ANOVA Results for Average_SA_Level (Last Step):")
     print(f"F-statistic: {anova_result.statistic:.4f}")
     print(f"P-value: {anova_result.pvalue:.4f}")
 
-    # Interpret results
     if anova_result.pvalue < 0.05 and not np.isnan(anova_result.pvalue):
-        print("Result: Significant difference in Average_SA across reporting structures (p < 0.05)")
-        # Post-hoc Tukey HSD
-        tukey = pairwise_tukeyhsd(endog=metrics_df["Average_SA"], groups=metrics_df["Reporting_Structure"], alpha=0.05)
+        print("Result: Significant difference in Average_SA_Level across reporting structures (p < 0.05)")
+        tukey = pairwise_tukeyhsd(endog=metrics_df["Average_SA_Level"], groups=metrics_df["Reporting_Structure"], alpha=0.05)
         print("\nTukey HSD Post-Hoc Test:")
         print(tukey)
     else:
-        print("Result: No significant difference in Average_SA across reporting structures (p >= 0.05 or NaN)")
+        print("Result: No significant difference in Average_SA_Level across reporting structures (p >= 0.05 or NaN)")
 
-    # Mean SA by reporting structure
-    print("\nMean Average_SA by Reporting Structure:")
+    print("\nMean Average_SA_Level by Reporting Structure:")
     for rep in ["dedicated", "self", "none"]:
         if rep in metrics_df["Reporting_Structure"].values:
-            mean_sa = metrics_df[metrics_df["Reporting_Structure"] == rep]["Average_SA"].mean()
+            mean_sa_level = metrics_df[metrics_df["Reporting_Structure"] == rep]["Average_SA_Level"].mean()
             mean_step = metrics_df[metrics_df["Reporting_Structure"] == rep]["Step_Used"].mean()
-            print(f"{rep.capitalize()}: {mean_sa:.2f} (Mean Step: {mean_step:.2f})")
+            print(f"{rep.capitalize()}: {mean_sa_level:.2f} (Mean Step: {mean_step:.2f})")
 
-    # Effect size and power analysis
-    effect_size = calculate_effect_size(metrics_df, "Average_SA")
+    effect_size = calculate_effect_size(metrics_df, "Average_SA_Level")
     print(f"\nEffect Size (Cohen's f): {effect_size:.4f}")
     required_simulations = estimate_required_simulations(effect_size)
     if required_simulations:
@@ -246,7 +240,6 @@ def analyze_h1(metrics_df, agent_df):
     else:
         print("Cannot estimate required simulations due to zero or large effect size.")
 
-    # Summarize agent decisions
     summarize_agent_decisions(agent_df)
 
 def main():
