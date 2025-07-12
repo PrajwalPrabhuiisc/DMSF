@@ -2,12 +2,12 @@ import mesa
 import random
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
 import os
 import traceback
 import logging
 from typing import List, Dict
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from enums import ReportingStructure, OrgStructure, AgentRole, EventType, ActionType
 from data_classes import ProjectOutcomes
 
@@ -35,7 +35,8 @@ class ConstructionModel(mesa.Model):
         reporter_reporting: float = 0.95,
         director_reporting: float = 0.85,
         initial_budget: float = 1000000,
-        initial_equipment: int = 500
+        initial_equipment: int = 500,
+        run_id: int = 1
     ):
         super().__init__()
         self.width = width
@@ -70,9 +71,10 @@ class ConstructionModel(mesa.Model):
             EventType.RESOURCE_SHORTAGE: []
         }
         self.previous_adherence = 0.0
-        self.simulation_id = f"sim_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.simulation_id = f"sim_{datetime.now().strftime('%Y%m%d_%H%M%S')}_run{run_id:03d}"
         self._initialized = False
         self.hazard_acted_this_step = False
+        self.initial_sa_scores = {}  # Store initial SA scores
         self.datacollector = mesa.DataCollector(
             model_reporters={
                 "SafetyIncidents": lambda m: m.outcomes.safety_incidents,
@@ -116,16 +118,16 @@ class ConstructionModel(mesa.Model):
                     if any(a.role == AgentRole.REPORTER for a in m.schedule.agents) else 0
                 ),
                 "Worker_Reports_Received": lambda m: (
-                    np.sum([len(a.reports_received) for a in self.schedule.agents if a.role == AgentRole.WORKER])
-                    if any(a.role == AgentRole.WORKER for a in self.schedule.agents) else 0
+                    np.sum([len(a.reports_received) for a in m.schedule.agents if a.role == AgentRole.WORKER])
+                    if any(a.role == AgentRole.WORKER for a in m.schedule.agents) else 0
                 ),
                 "Manager_Reports_Received": lambda m: (
-                    np.sum([len(a.reports_received) for a in self.schedule.agents if a.role == AgentRole.MANAGER])
-                    if any(a.role == AgentRole.MANAGER for a in self.schedule.agents) else 0
+                    np.sum([len(a.reports_received) for a in m.schedule.agents if a.role == AgentRole.MANAGER])
+                    if any(a.role == AgentRole.MANAGER for a in m.schedule.agents) else 0
                 ),
                 "Director_Reports_Received": lambda m: (
-                    np.sum([len(a.reports_received) for a in self.schedule.agents if a.role == AgentRole.DIRECTOR])
-                    if any(a.role == AgentRole.DIRECTOR for a in self.schedule.agents) else 0
+                    np.sum([len(a.reports_received) for a in m.schedule.agents if a.role == AgentRole.DIRECTOR])
+                    if any(a.role == AgentRole.DIRECTOR for a in m.schedule.agents) else 0
                 ),
                 "Reporter_Reports_Received": lambda m: (
                     np.sum([len(a.reports_received) for a in m.schedule.agents if a.role == AgentRole.REPORTER])
@@ -155,6 +157,7 @@ class ConstructionModel(mesa.Model):
             agent_reporters={
                 "Role": lambda a: a.role.value,
                 "SA_Score": lambda a: a.awareness.total_score(),
+                "SA_Level": lambda a: a.awareness.total_score() - self.initial_sa_scores.get(a.unique_id, 0),
                 "ReportsSent": lambda a: a.reports_sent,
                 "Workload": lambda a: a.workload,
                 "Fatigue": lambda a: a.fatigue,
@@ -191,10 +194,16 @@ class ConstructionModel(mesa.Model):
         self.lock_filepath = self.excel_filepath + ".lock"
 
         try:
-            with FileLock(self.lock_filepath, timeout=10):
+            with FileLock(self.lock_filepath, timeout=30):
                 with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='w') as writer:
                     pd.DataFrame(self.configuration_log).to_excel(writer, sheet_name='Configuration', index=False)
                 logging.debug(f"Initialized new Excel file: {self.excel_filepath}")
+        except Timeout as e:
+            print(f"Timeout initializing Excel file {self.excel_filepath}: {e}")
+            logging.error(f"Excel initialization timeout: {traceback.format_exc()}")
+            if self.configuration_log:
+                pd.DataFrame(self.configuration_log).to_csv(self.csv_filepath, index=False)
+                logging.debug(f"Configuration saved to fallback CSV: {self.csv_filepath}")
         except Exception as e:
             print(f"Error initializing Excel file {self.excel_filepath}: {e}")
             logging.error(f"Excel initialization error: {traceback.format_exc()}")
@@ -280,6 +289,8 @@ class ConstructionModel(mesa.Model):
             self.schedule.add(agent)
             self.grid.place_agent(agent, pos)
             agent_id += 1
+        # Log initial SA scores at step 0
+        self.log_agent_situational_awareness()
 
     def get_events(self) -> List[Dict]:
         self.current_events = []
@@ -347,6 +358,7 @@ class ConstructionModel(mesa.Model):
 
         if self.reporting_structure == ReportingStructure.DEDICATED:
             if sender.role != AgentRole.REPORTER:
+                # Non-reporters send to reporters within communication radius
                 neighbors = self.grid.get_neighbors(sender.pos, moore=True, include_center=False, radius=comm_radius)
                 for agent in self.schedule.agents:
                     if agent in neighbors and agent.role == AgentRole.REPORTER and random.random() > comm_failure:
@@ -358,52 +370,78 @@ class ConstructionModel(mesa.Model):
                             f"Step {self.schedule.steps}: {sender.role.value} {sender.unique_id} sent to "
                             f"REPORTER {agent.unique_id}, event={event.get('type')}"
                         )
-                target_roles = []
-                if self.org_structure == OrgStructure.HIERARCHICAL:
-                    target_roles = [AgentRole.MANAGER if sender.role == AgentRole.WORKER else AgentRole.DIRECTOR]
-                else:
-                    target_roles = [AgentRole.WORKER, AgentRole.MANAGER, AgentRole.DIRECTOR]
-                for agent in self.schedule.agents:
-                    if agent != sender and agent.role in target_roles and agent in neighbors and random.random() > comm_failure:
-                        agent.reports_received.append(report)
-                        success = True
-                        if event and not report.get("acted_on", False):
-                            follow_up_action = agent.decide_action(event, is_follow_up=True)
-                            agent.execute_action(event, follow_up_action)
-                            report["acted_on"] = True
-                            logging.info(
-                                f"Step {self.schedule.steps}: {sender.role.value} {sender.unique_id} sent to "
-                                f"{agent.role.value} {agent.unique_id}, action={follow_up_action}, "
-                                f"event={event.get('type')}"
-                            )
+                # Additional hierarchical reporting for non-reporters in functional structure
+                if self.org_structure == OrgStructure.FUNCTIONAL:
+                    target_roles = []
+                    if sender.role == AgentRole.WORKER:
+                        target_roles = [AgentRole.MANAGER]
+                    elif sender.role == AgentRole.MANAGER:
+                        target_roles = [AgentRole.DIRECTOR]
+                    elif sender.role == AgentRole.DIRECTOR:
+                        target_roles = [AgentRole.MANAGER]  # Directors report downward to managers
+                    for agent in self.schedule.agents:
+                        if agent != sender and agent.role in target_roles and agent in neighbors and random.random() > comm_failure:
+                            agent.reports_received.append(report)
+                            success = True
+                            if event and not report.get("acted_on", False):
+                                follow_up_action = agent.decide_action(event, is_follow_up=True)
+                                agent.execute_action(event, follow_up_action)
+                                report["acted_on"] = True
+                                logging.info(
+                                    f"Step {self.schedule.steps}: {sender.role.value} {sender.unique_id} sent to "
+                                    f"{agent.role.value} {agent.unique_id}, action={follow_up_action}, "
+                                    f"event={event.get('type')}"
+                                )
             else:
-                target_roles = []
-                if event.get("type") == EventType.HAZARD:
-                    target_roles = [AgentRole.MANAGER, AgentRole.DIRECTOR]
-                elif event.get("type") == EventType.RESOURCE_SHORTAGE:
-                    target_roles = [AgentRole.DIRECTOR]
-                for agent in self.schedule.agents:
-                    if agent.role in target_roles and random.random() > comm_failure:
-                        agent.reports_received.append(report)
-                        success = True
-                        if event and not report.get("acted_on", False):
-                            follow_up_action = agent.decide_action(event, is_follow_up=True)
-                            agent.execute_action(event, follow_up_action)
-                            report["acted_on"] = True
+                # Reporters aggregate reports and broadcast to all non-reporter agents
+                aggregated_report = {"type": "AGGREGATED", "events": [], "acted_on": False}
+                for r in sender.reports_received:
+                    event = r.get("event", {})
+                    if event and event.get("type"):
+                        # Aggregate by taking max severity for each event type
+                        existing = next((e for e in aggregated_report["events"] if e["type"] == event["type"]), None)
+                        if existing:
+                            existing["severity"] = max(existing["severity"], event["severity"])
+                        else:
+                            aggregated_report["events"].append({
+                                "type": event["type"],
+                                "severity": event["severity"],
+                                "description": event["description"]
+                            })
+                if aggregated_report["events"]:
+                    for agent in self.schedule.agents:
+                        if agent.role != AgentRole.REPORTER and random.random() > comm_failure:
+                            agent.reports_received.append(aggregated_report)
+                            success = True
+                            if not aggregated_report["acted_on"]:
+                                for event in aggregated_report["events"]:
+                                    follow_up_action = agent.decide_action(event, is_follow_up=True)
+                                    agent.execute_action(event, follow_up_action)
+                                aggregated_report["acted_on"] = True
                             logging.info(
-                                f"Step {self.schedule.steps}: REPORTER {sender.unique_id} sent to "
-                                f"{agent.role.value} {agent.unique_id}, action={follow_up_action}, "
-                                f"event={event.get('type')}"
+                                f"Step {self.schedule.steps}: REPORTER {sender.unique_id} broadcast aggregated report "
+                                f"to {agent.role.value} {agent.unique_id}, events={[e['type'] for e in aggregated_report['events']]}"
                             )
         elif self.reporting_structure == ReportingStructure.SELF:
-            target_roles = []
-            if self.org_structure == OrgStructure.HIERARCHICAL:
-                target_roles = [AgentRole.MANAGER if sender.role == AgentRole.WORKER else AgentRole.DIRECTOR]
-            else:
-                target_roles = [AgentRole.WORKER, AgentRole.MANAGER, AgentRole.DIRECTOR]
+            # Hierarchical reporting for functional structure
             neighbors = self.grid.get_neighbors(sender.pos, moore=True, include_center=False, radius=comm_radius)
+            target_roles = []
+            if self.org_structure == OrgStructure.FUNCTIONAL:
+                if sender.role == AgentRole.WORKER:
+                    target_roles = [AgentRole.MANAGER]
+                elif sender.role == AgentRole.MANAGER:
+                    target_roles = [AgentRole.DIRECTOR]
+                elif sender.role == AgentRole.DIRECTOR:
+                    target_roles = [AgentRole.MANAGER]  # Directors report downward to managers
+            else:
+                # For non-functional (e.g., hierarchical, flat), keep original logic
+                target_roles = (
+                    [AgentRole.MANAGER] if sender.role == AgentRole.WORKER else
+                    [AgentRole.DIRECTOR] if sender.role == AgentRole.MANAGER else
+                    [AgentRole.WORKER, AgentRole.MANAGER, AgentRole.DIRECTOR]
+                )
             for agent in self.schedule.agents:
-                if agent in neighbors and agent.role in target_roles and random.random() > comm_failure:
+                if agent != sender and agent.role in target_roles and agent in neighbors and random.random() > comm_failure:
                     agent.reports_received.append(report)
                     success = True
                     if event and not report.get("acted_on", False):
@@ -415,9 +453,22 @@ class ConstructionModel(mesa.Model):
                             f"{agent.role.value} {agent.unique_id}, action={follow_up_action}, "
                             f"event={event.get('type')}"
                         )
-        else:
+        else:  # ReportingStructure.NONE
+            # Hierarchical reporting for functional structure
+            neighbors = self.grid.get_neighbors(sender.pos, moore=True, include_center=False, radius=comm_radius)
+            target_roles = []
+            if self.org_structure == OrgStructure.FUNCTIONAL:
+                if sender.role == AgentRole.WORKER:
+                    target_roles = [AgentRole.MANAGER]
+                elif sender.role == AgentRole.MANAGER:
+                    target_roles = [AgentRole.DIRECTOR]
+                elif sender.role == AgentRole.DIRECTOR:
+                    target_roles = [AgentRole.MANAGER]  # Directors report downward to managers
+            else:
+                # For non-functional, broadcast to all
+                target_roles = [AgentRole.WORKER, AgentRole.MANAGER, AgentRole.DIRECTOR]
             for agent in self.schedule.agents:
-                if agent != sender and random.random() > comm_failure:
+                if agent != sender and agent.role in target_roles and agent in neighbors and random.random() > comm_failure:
                     agent.reports_received.append(report)
                     success = True
                     if event and not report.get("acted_on", False):
@@ -549,13 +600,20 @@ class ConstructionModel(mesa.Model):
     def log_agent_situational_awareness(self):
         try:
             sa_data = []
+            # Store initial SA scores at step 0
+            if self.schedule.steps == 0:
+                self.initial_sa_scores = {agent.unique_id: agent.awareness.total_score() for agent in self.schedule.agents}
+            
             for agent in self.schedule.agents:
+                sa_score = agent.awareness.total_score()
+                sa_level = sa_score - self.initial_sa_scores.get(agent.unique_id, 0) if self.schedule.steps > 0 else 0
                 sa_data.append({
                     "Simulation_ID": self.simulation_id,
                     "Step": self.schedule.steps,
                     "Agent_ID": agent.unique_id,
                     "Role": agent.role.value,
-                    "SA_Score": agent.awareness.total_score(),
+                    "SA_Score": sa_score,
+                    "SA_Level": sa_level,
                     "Reports_Sent": agent.reports_sent,
                     "Reports_Received": len(agent.reports_received),
                     "Workload": agent.workload,
@@ -571,70 +629,96 @@ class ConstructionModel(mesa.Model):
             logging.error(f"SA logging error: {traceback.format_exc()}")
 
     def save_to_excel(self):
-        try:
-            with FileLock(self.lock_filepath, timeout=10):
-                metrics_df = pd.DataFrame(self.metrics_log) if self.metrics_log else pd.DataFrame()
-                sa_df = pd.DataFrame(self.agent_sa_log) if self.agent_sa_log else pd.DataFrame()
-                model_data = pd.DataFrame()
-                agent_data = pd.DataFrame()
-                try:
-                    model_data = self.datacollector.get_model_vars_dataframe()
-                    agent_data = self.datacollector.get_agent_vars_dataframe()
-                except Exception as e:
-                    print(f"Error collecting Mesa data at step {self.schedule.steps}: {e}")
-                    logging.error(f"Mesa data collection error: {traceback.format_exc()}")
-
-                with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='w') as writer:
-                    pd.DataFrame(self.configuration_log).to_excel(writer, sheet_name='Configuration', index=False)
-                    if not metrics_df.empty:
-                        metrics_df.to_excel(writer, sheet_name='Model_Metrics', index=False)
-                    if not sa_df.empty:
-                        sa_df.to_excel(writer, sheet_name='Agent_SA', index=False)
-                    if not model_data.empty:
-                        model_data.to_excel(writer, sheet_name='Mesa_Model_Data', index=False)
-                    if not agent_data.empty:
-                        agent_data.to_excel(writer, sheet_name='Mesa_Agent_Data', index=False)
-                logging.info(f"Data written to {self.excel_filepath} at step {self.schedule.steps}")
-                print(f"Data successfully written to {self.excel_filepath} at step {self.schedule.steps}")
-                self.metrics_log = []
-                self.agent_sa_log = []
-        except Exception as e:
-            print(f"Error saving to Excel at step {self.schedule.steps}: {e}")
-            logging.error(f"Excel save error: {traceback.format_exc()}")
+        max_retries = 3
+        retry_delay = 5
+        for attempt in range(max_retries):
             try:
-                if not metrics_df.empty:
-                    metrics_df.to_csv(
-                        self.csv_filepath.replace('.csv', '_metrics.csv'),
-                        mode='a',
-                        header=not os.path.exists(self.csv_filepath.replace('.csv', '_metrics.csv')),
-                        index=False
-                    )
-                if not sa_df.empty:
-                    sa_df.to_csv(
-                        self.csv_filepath.replace('.csv', '_agent_sa.csv'),
-                        mode='a',
-                        header=not os.path.exists(self.csv_filepath.replace('.csv', '_agent_sa.csv')),
-                        index=False
-                    )
-                if not model_data.empty:
-                    model_data.to_csv(
-                        self.csv_filepath.replace('.csv', '_model_data.csv'),
-                        mode='a',
-                        header=not os.path.exists(self.csv_filepath.replace('.csv', '_model_data.csv')),
-                        index=False
-                    )
-                if not agent_data.empty:
-                    agent_data.to_csv(
-                        self.csv_filepath.replace('.csv', '_agent_data.csv'),
-                        mode='a',
-                        header=not os.path.exists(self.csv_filepath.replace('.csv', '_agent_data.csv')),
-                        index=False
-                    )
-                logging.info(f"Data saved to CSV files at {self.csv_filepath.replace('.csv', '_*.csv')}")
-                print(f"Data saved to CSV files at {self.csv_filepath.replace('.csv', '_*.csv')}")
+                with FileLock(self.lock_filepath, timeout=30):
+                    metrics_df = pd.DataFrame(self.metrics_log) if self.metrics_log else pd.DataFrame()
+                    sa_df = pd.DataFrame(self.agent_sa_log) if self.agent_sa_log else pd.DataFrame()
+                    model_data = pd.DataFrame()
+                    agent_data = pd.DataFrame()
+                    try:
+                        model_data = self.datacollector.get_model_vars_dataframe()
+                        agent_data = self.datacollector.get_agent_vars_dataframe()
+                    except Exception as e:
+                        print(f"Error collecting Mesa data at step {self.schedule.steps}: {e}")
+                        logging.error(f"Mesa data collection error: {traceback.format_exc()}")
+
+                    with pd.ExcelWriter(self.excel_filepath, engine='openpyxl', mode='w') as writer:
+                        pd.DataFrame(self.configuration_log).to_excel(writer, sheet_name='Configuration', index=False)
+                        if not metrics_df.empty:
+                            metrics_df.to_excel(writer, sheet_name='Model_Metrics', index=False)
+                        if not sa_df.empty:
+                            sa_df.to_excel(writer, sheet_name='Agent_SA', index=False)
+                        if not model_data.empty:
+                            model_data.to_excel(writer, sheet_name='Mesa_Model_Data', index=False)
+                        if not agent_data.empty:
+                            agent_data.to_excel(writer, sheet_name='Mesa_Agent_Data', index=False)
+                    logging.info(f"Data successfully written to {self.excel_filepath} at step {self.schedule.steps}, attempt {attempt + 1}")
+                    print(f"Data successfully written to {self.excel_filepath} at step {self.schedule.steps}, attempt {attempt + 1}")
+                    self.metrics_log = []
+                    self.agent_sa_log = []
+                    return
+            except Timeout as e:
+                print(f"Timeout saving to Excel at step {self.schedule.steps}, attempt {attempt + 1}: {e}")
+                logging.error(f"Excel save timeout at attempt {attempt + 1}: {traceback.format_exc()}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                continue
             except Exception as e:
-                print(f"Error saving to CSV at step {self.schedule.steps}: {e}")
-                logging.error(f"CSV save error: {traceback.format_exc()}")
+                print(f"Error saving to Excel at step {self.schedule.steps}, attempt {attempt + 1}: {e}")
+                logging.error(f"Excel save error at attempt {attempt + 1}: {traceback.format_exc()}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                continue
+        try:
+            metrics_df = pd.DataFrame(self.metrics_log) if self.metrics_log else pd.DataFrame()
+            sa_df = pd.DataFrame(self.agent_sa_log) if self.agent_sa_log else pd.DataFrame()
+            model_data = pd.DataFrame()
+            agent_data = pd.DataFrame()
+            try:
+                model_data = self.datacollector.get_model_vars_dataframe()
+                agent_data = self.datacollector.get_agent_vars_dataframe()
+            except Exception as e:
+                print(f"Error collecting Mesa data for CSV fallback: {e}")
+                logging.error(f"Mesa data collection error for CSV: {traceback.format_exc()}")
+
+            if not metrics_df.empty:
+                metrics_df.to_csv(
+                    self.csv_filepath.replace('.csv', '_metrics.csv'),
+                    mode='a',
+                    header=not os.path.exists(self.csv_filepath.replace('.csv', '_metrics.csv')),
+                    index=False
+                )
+            if not sa_df.empty:
+                sa_df.to_csv(
+                    self.csv_filepath.replace('.csv', '_agent_sa.csv'),
+                    mode='a',
+                    header=not os.path.exists(self.csv_filepath.replace('.csv', '_agent_sa.csv')),
+                    index=False
+                )
+            if not model_data.empty:
+                model_data.to_csv(
+                    self.csv_filepath.replace('.csv', '_model_data.csv'),
+                    mode='a',
+                    header=not os.path.exists(self.csv_filepath.replace('.csv', '_model_data.csv')),
+                    index=False
+                )
+            if not agent_data.empty:
+                agent_data.to_csv(
+                    self.csv_filepath.replace('.csv', '_agent_data.csv'),
+                    mode='a',
+                    header=not os.path.exists(self.csv_filepath.replace('.csv', '_agent_data.csv')),
+                    index=False
+                )
+            logging.info(f"Data saved to CSV files at {self.csv_filepath.replace('.csv', '_*.csv')} as fallback")
+            print(f"Data saved to CSV files at {self.csv_filepath.replace('.csv', '_*.csv')} as fallback")
+        except Exception as e:
+            print(f"Error saving to CSV at step {self.schedule.steps}: {e}")
+            logging.error(f"CSV save error: {traceback.format_exc()}")
 
     def step(self):
         try:
@@ -673,58 +757,8 @@ class ConstructionModel(mesa.Model):
             f"Directors={len([a for a in self.schedule.agents if a.role == AgentRole.DIRECTOR])}, "
             f"Reporters={len([a for a in self.schedule.agents if a.role == AgentRole.REPORTER])}"
         )
-
-        for i in range(steps):
-            try:
-                self.step()
-                if (i + 1) % 25 == 0:
-                    logging.info(f"Completed step {i + 1}/{steps}")
-                    print(f"Completed step {i + 1}/{steps}")
-            except Exception as e:
-                print(f"Simulation halted at step {i + 1}: {e}")
-                logging.error(f"Simulation halted at step {i + 1}: {e}")
-                break
-
+        for _ in range(steps):
+            self.step()
         self.save_to_excel()
-        logging.info(f"Simulation completed. Results saved to {self.excel_filepath}")
-        print(f"Simulation completed. Results saved to {self.excel_filepath}")
-        self.print_summary()
-
-    def print_summary(self):
-        print("\n" + "="*50)
-        print("SIMULATION SUMMARY")
-        print("="*50)
-        print(f"Simulation ID: {self.simulation_id}")
-        print(f"Total Steps: {self.schedule.steps}")
-        print(f"Reporting Structure: {self.reporting_structure.value}")
-        print(f"Organizational Structure: {self.org_structure.value}")
-        print(f"Communication Failure Rate: {self.get_current_comm_failure():.3f}")
-        print(f"Budget Remaining: ${self.budget:,.2f}")
-        print(f"Equipment Available: {self.equipment_available}")
-        print("\nSafety Outcomes:")
-        print(f"  Safety Incidents: {self.outcomes.safety_incidents}")
-        print(f"  Incident Points: {self.outcomes.incident_points:.1f}")
-        print(f"  Cost Overruns: ${self.outcomes.cost_overruns:,.2f}")
-
-        print("\nSchedule Performance:")
-        if self.outcomes.total_tasks > 0:
-            adherence = (self.outcomes.tasks_completed_on_time / self.outcomes.total_tasks) * 100
-            print(f"  Schedule Adherence: {adherence:.1f}%")
-            print(f"  Tasks Completed On Time: {self.outcomes.tasks_completed_on_time}/{self.outcomes.total_tasks}")
-        else:
-            print("  No tasks recorded")
-
-        print("\nSituational Awareness (Average):")
-        for role in AgentRole:
-            agents_of_role = [a for a in self.schedule.agents if a.role == role]
-            if agents_of_role:
-                avg_sa = np.mean([a.awareness.total_score() for a in agents_of_role])
-                print(f"  {role.value.capitalize()}: {avg_sa:.2f}")
-
-        print("\nReporting Activity:")
-        for role in AgentRole:
-            agents_of_role = [a for a in self.schedule.agents if a.role == role]
-            if agents_of_role:
-                total_sent = sum([a.reports_sent for a in agents_of_role])
-                total_received = sum([len(a.reports_received) for a in agents_of_role])
-                print(f"  {role.value.capitalize()}: Sent={total_sent}, Received={total_received}")
+        logging.info(f"Simulation completed: {self.simulation_id}")
+        print(f"Simulation completed: {self.simulation_id}")
