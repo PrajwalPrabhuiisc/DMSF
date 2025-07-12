@@ -176,7 +176,7 @@ if __name__ == "__main__":
     ]
 
     steps = 100  # Align with analyse_h1.py expectation
-    num_runs = 20  # Number of runs per configuration
+    num_runs = 26  # Number of runs per configuration
 
     # Run simulations in parallel
     all_results = []
